@@ -1,0 +1,265 @@
+.container {
+  min-height: 100vh;
+  background: var(--bg);
+  padding: 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 30px;
+  max-width: 900px;
+  width: 100%;
+  box-shadow: var(--shadow);
+}
+
+.panel h1 {
+  font-size: 28px;
+  color: var(--text-1);
+  margin-bottom: 20px;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.panel h2 {
+  font-size: 20px;
+  color: var(--text-1);
+  margin: 20px 0 12px;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.panel h3 {
+  font-size: 16px;
+  color: var(--text-1);
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.panel h4 {
+  font-size: 14px;
+  color: var(--text-2);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+.panel p {
+  color: var(--text-2);
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+
+/* Auth Section */
+.authSection {
+  margin-top: 20px;
+}
+
+/* Settings Section */
+.settingsSection {
+  margin-top: 20px;
+}
+
+.userInfo {
+  background: var(--brand-wash);
+  border: 1px solid var(--brand-wash-strong);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.userInfo h3 {
+  margin-top: 0;
+}
+
+.userInfo p {
+  font-size: 14px;
+  margin: 8px 0;
+}
+
+.userInfo strong {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* Setting Boxes */
+.settingBox {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.settingBox h3 {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.settingBox > p {
+  margin-bottom: 16px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* Form */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.field input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 14px;
+  font-family: var(--font-body);
+}
+
+.field input:focus {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+  border-color: var(--brand);
+}
+
+/* Checkbox */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.checkbox input {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.checkbox label {
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  margin: 0;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Button */
+.button {
+  padding: 10px 16px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: var(--font-body);
+  width: fit-content;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--brand-2);
+  box-shadow: 0 4px 12px var(--brand-wash-strong);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Messages */
+.error {
+  background: var(--critical-wash);
+  border: 1px solid color-mix(in srgb, var(--critical) 35%, transparent);
+  color: var(--critical);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.success {
+  background: var(--good-wash);
+  border: 1px solid color-mix(in srgb, var(--good) 35%, transparent);
+  color: var(--good);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+/* Info Box */
+.info {
+  background: var(--mint-wash);
+  border: 1px solid color-mix(in srgb, var(--mint) 35%, transparent);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 24px;
+}
+
+.info h4 {
+  color: var(--mint);
+}
+
+.info ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.info li {
+  color: var(--text-2);
+  font-size: 13px;
+  margin-bottom: 6px;
+  padding-left: 20px;
+  position: relative;
+}
+
+.info li:before {
+  content: '✓';
+  color: var(--mint);
+  position: absolute;
+  left: 0;
+  font-weight: bold;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .panel {
+    padding: 20px;
+  }
+
+  .panel h1 {
+    font-size: 22px;
+  }
+
+  .settingBox {
+    padding: 16px;
+  }
+}

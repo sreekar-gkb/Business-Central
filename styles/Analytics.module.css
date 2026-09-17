@@ -1,0 +1,381 @@
+.container {
+  min-height: 100vh;
+  background: var(--bg);
+  padding: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 30px;
+  max-width: 1200px;
+  width: 100%;
+  box-shadow: var(--shadow);
+}
+
+.panel h1 {
+  font-size: 28px;
+  color: var(--text-1);
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.panel h2 {
+  font-size: 18px;
+  color: var(--text-1);
+  margin: 20px 0 12px;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.panel p {
+  color: var(--text-2);
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.backButton,
+.logoutButton {
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.backButton:hover,
+.logoutButton:hover {
+  background: var(--surface-3);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+}
+
+.field input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 14px;
+  font-family: var(--font-body);
+}
+
+.field input:focus {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.button {
+  padding: 10px 16px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: var(--font-body);
+  width: fit-content;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--brand-2);
+  box-shadow: 0 4px 12px var(--brand-wash-strong);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error {
+  background: var(--critical-wash);
+  color: var(--critical);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-3);
+}
+
+.subtext {
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+.activitiesList {
+  margin-top: 24px;
+}
+
+.contactsList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.contactCard {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: all 0.2s;
+}
+
+.contactCard:hover {
+  border-color: var(--brand);
+  box-shadow: 0 2px 8px var(--brand-wash-strong);
+}
+
+.contactInfo h3 {
+  font-size: 16px;
+  color: var(--brand);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.sessionId {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
+.eventCount {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.viewButton {
+  padding: 8px 12px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  align-self: flex-start;
+}
+
+.viewButton:hover {
+  background: var(--brand-2);
+}
+
+.reportCard {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  text-align: center;
+}
+
+.statLabel {
+  font-size: 11px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.statValue {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--brand);
+  font-family: var(--font-mono);
+}
+
+.panelList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.panelItem {
+  background: var(--surface);
+  border-left: 3px solid var(--brand);
+  padding: 10px 12px;
+  border-radius: 4px;
+}
+
+.panelName {
+  font-weight: 600;
+  color: var(--brand);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.panelStats {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.panelStat {
+  display: flex;
+  align-items: center;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.timelineItem {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.timelineTime {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.timelineEvent {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.event_panel_view {
+  border-left: 3px solid var(--brand);
+}
+
+.event_input_change {
+  border-left: 3px solid var(--warning);
+}
+
+.event_button_click {
+  border-left: 3px solid var(--mint);
+}
+
+.timelineType {
+  font-weight: 600;
+  color: var(--text-1);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.timelineDetails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.detail {
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.detail strong {
+  color: var(--text-2);
+}
+
+.footer {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .panel {
+    padding: 20px;
+  }
+
+  .contactsList {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .timelineItem {
+    grid-template-columns: 1fr;
+  }
+
+  .timelineTime {
+    display: inline-block;
+    margin-bottom: 4px;
+  }
+}
