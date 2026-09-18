@@ -54,169 +54,138 @@ import styles from '../styles/DealSizer.module.css';
 
 let INT_SEQ = 1;
 
+// A genuinely blank slate for a brand new user: no customer details, no
+// modules, no challenges, no integrations, nothing pre-selected. The
+// dashboard and every chart read directly off this via runEngine(state),
+// so an empty state here means an empty (or near-zero) dashboard until
+// the user actually fills something in - there is no separate "empty
+// state" UI to keep in sync, the real calculation just has nothing to
+// calculate yet.
 function getDefaultState() {
   return {
     customer: {
-      name: "Southern Cross Distribution Pty Ltd",
-      industry: "Distribution",
-      industryComplexity: "Medium",
-      country: "Australia",
-      entities: 2,
-      companies: 2,
-      locations: 4,
-      warehouses: 3,
-      users: 85,
-      concurrentUsers: 60,
-      financeUsers: 12,
-      opsUsers: 45,
-      whUsers: 20,
+      name: "",
+      industry: "Manufacturing",
+      industryComplexity: "Low",
+      country: "",
+      entities: 1,
+      companies: 1,
+      locations: 1,
+      warehouses: 0,
+      users: 1,
+      concurrentUsers: 0,
+      financeUsers: 0,
+      opsUsers: 0,
+      whUsers: 0,
       mfgUsers: 0,
-      extUsers: 5,
-      txnVolume: "~ 40,000 sales lines / month",
-      growthRate: "12% p.a.",
+      extUsers: 0,
+      txnVolume: "",
+      growthRate: "",
       targetDate: "",
       goLiveStrategy: "Phased rollout"
     },
-    challenges: new Set([
-      "legacy_erp",
-      "excel_dependency",
-      "inv_visibility",
-      "wh_inefficiency",
-      "poor_reporting",
-      "integration_problems"
-    ]),
-    modules: new Set([
-      "gl",
-      "ap",
-      "ar",
-      "cashbank",
-      "fixedassets",
-      "dimensions",
-      "finreporting",
-      "sales",
-      "pricing",
-      "custmgmt",
-      "purchasing",
-      "vendormgmt",
-      "invmgmt",
-      "itemtracking",
-      "multiloc",
-      "whmgmt",
-      "binmgmt",
-      "replenishment",
-      "powerbi",
-      "approvals",
-      "workflows"
-    ]),
+    challenges: new Set(),
+    modules: new Set(),
     complexity: {
-      overall: "Moderate",
+      overall: "Simple",
       areas: {
-        finance: "Medium",
-        sales: "Medium",
-        purchasing: "Medium",
-        inventory: "High",
-        warehouse: "High",
+        finance: "Low",
+        sales: "Low",
+        purchasing: "Low",
+        inventory: "Low",
+        warehouse: "Low",
         manufacturing: "Low",
         projects: "Low",
         service: "Low",
-        reporting: "Medium",
-        integrations: "High",
-        migration: "High",
+        reporting: "Low",
+        integrations: "Low",
+        migration: "Low",
         localization: "Low",
-        customization: "Medium"
+        customization: "Low"
       }
     },
     migration: {
-      source: "Dynamics NAV",
-      scope: new Set([
-        "customers",
-        "vendors",
-        "items",
-        "coa",
-        "dimensions",
-        "opening_balances",
-        "inv_opening",
-        "open_sales_docs",
-        "open_purch_docs",
-        "bank_data"
-      ]),
-      complexity: "High",
-      dataQuality: "Moderate",
-      cycles: 2
+      source: "Other",
+      scope: new Set(),
+      complexity: "Low",
+      dataQuality: "Unknown",
+      cycles: 1
     },
-    integrations: [
-      {
-        id: INT_SEQ++,
-        name: "Salesforce CRM",
-        category: "CRM",
-        direction: "Bidirectional",
-        complexity: "Medium",
-        mode: "Real-time",
-        interfaces: 3
-      },
-      {
-        id: INT_SEQ++,
-        name: "3PL / EDI",
-        category: "EDI",
-        direction: "Bidirectional",
-        complexity: "High",
-        mode: "Batch",
-        interfaces: 4
-      },
-      {
-        id: INT_SEQ++,
-        name: "Bank feed",
-        category: "Banking",
-        direction: "Inbound",
-        complexity: "Low",
-        mode: "Batch",
-        interfaces: 1
-      }
-    ],
+    integrations: [],
     customization: {
-      level: "Moderate customization",
+      level: "No customization",
       items: {
-        customTables: 2,
-        tableExt: 6,
-        pageExt: 8,
-        reportsDev: 5,
-        workflowsDev: 4,
-        businessLogic: 3,
-        customApi: 2,
-        mobile: 1,
-        docLayouts: 4,
-        industrySpecific: 1
+        customTables: 0,
+        tableExt: 0,
+        pageExt: 0,
+        reportsDev: 0,
+        workflowsDev: 0,
+        businessLogic: 0,
+        customApi: 0,
+        mobile: 0,
+        docLayouts: 0,
+        industrySpecific: 0
       }
     },
     reporting: {
-      items: new Set(["standard", "custom", "mgmt", "finStatements", "operational"]),
-      complexity: "Medium"
+      items: new Set(),
+      complexity: "Low"
     },
     localization: {
-      country: "Australia",
-      standardAvailable: "Yes",
+      country: "",
+      standardAvailable: "Unknown",
       multiCountry: false,
-      multiCurrency: true,
+      multiCurrency: false,
       multiTax: false,
       multiLanguage: false,
-      statutory: true,
+      statutory: false,
       eInvoicing: false,
       regulatory: false
     },
     delivery: {
       model: "Phased rollout",
-      remotePct: 80,
-      availability: "Medium",
+      remotePct: 0,
+      availability: "Unknown",
       timezoneComplexity: "Low"
     },
     support: {
       model: "Business hours",
-      scope: new Set(["functional", "technical", "admin", "enhancements"]),
+      scope: new Set(),
       sla: "Standard",
-      ticketVolume: "Medium"
+      ticketVolume: "Low"
     },
     contingencyOverride: null
   };
+}
+
+// True until the user has actually told us something about the deal: no
+// customer name, no modules, no integrations. Every KPI and chart is real
+// math on top of state, but that math still returns fixed program-overhead
+// hours (PM, discovery, architecture...) even with nothing selected - so
+// panels check this flag and show a plain empty-state message instead of
+// numbers that would otherwise look like a real (if small) estimate.
+function isEstimateEmpty(state) {
+  return (
+    !state.customer.name.trim() &&
+    state.modules.size === 0 &&
+    state.integrations.length === 0
+  );
+}
+
+function EmptyState({ message }) {
+  return (
+    <div style={{
+      border: '1px dashed var(--border-strong)',
+      borderRadius: 'var(--radius)',
+      padding: '40px 24px',
+      textAlign: 'center',
+      color: 'var(--text-3)',
+      fontSize: '13.5px',
+      background: 'var(--surface)'
+    }}>
+      {message || 'Fill in the Inputs tab to see this section populate automatically.'}
+    </div>
+  );
 }
 
 // JSONB in the database can't hold Sets, so state is round-tripped as
@@ -502,6 +471,7 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
           )}
         </div>
         <KpiBar
+          empty={isEstimateEmpty(state)}
           total={res.total}
           months={months}
           team={team}
@@ -534,8 +504,8 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
         )}
         {activePanel === "licensing" && <LicensingPanel state={state} />}
         {activePanel === "dashboard" && <DashboardPanel res={res} state={state} />}
-        {activePanel === "timeline" && <TimelinePanel weeks={weeks} />}
-        {activePanel === "team" && <TeamPanel res={res} weeks={weeks} />}
+        {activePanel === "timeline" && <TimelinePanel weeks={weeks} state={state} />}
+        {activePanel === "team" && <TeamPanel res={res} weeks={weeks} state={state} />}
         {activePanel === "governance" && <GovernancePanel state={state} />}
         {activePanel === "discovery" && <DiscoveryPanel state={state} />}
         {activePanel === "exec" && <ExecutivePanel res={res} state={state} weeks={weeks} team={team} conf={conf} />}
@@ -589,32 +559,32 @@ function Sidebar({ activePanel, onPanelChange }) {
   );
 }
 
-function KpiBar({ total, months, team, monthlySupport, complexity, confidence }) {
+function KpiBar({ empty, total, months, team, monthlySupport, complexity, confidence }) {
   return (
     <div className={styles.kpibar}>
       <div className={`${styles.kpiChip} ${styles.accent}`}>
         <div className={styles.kpiLabel}>Expected effort</div>
-        <div className={styles.kpiValue}>{fmtH(total)} h</div>
+        <div className={styles.kpiValue}>{empty ? '—' : `${fmtH(total)} h`}</div>
       </div>
       <div className={styles.kpiChip}>
         <div className={styles.kpiLabel}>Duration</div>
-        <div className={styles.kpiValue}>{months} mo</div>
+        <div className={styles.kpiValue}>{empty ? '—' : `${months} mo`}</div>
       </div>
       <div className={styles.kpiChip}>
         <div className={styles.kpiLabel}>Team (peak)</div>
-        <div className={styles.kpiValue}>{team} FTE</div>
+        <div className={styles.kpiValue}>{empty ? '—' : `${team} FTE`}</div>
       </div>
       <div className={styles.kpiChip}>
         <div className={styles.kpiLabel}>Monthly support</div>
-        <div className={styles.kpiValue}>{fmtH(monthlySupport)} h</div>
+        <div className={styles.kpiValue}>{empty ? '—' : `${fmtH(monthlySupport)} h`}</div>
       </div>
       <div className={styles.kpiChip}>
         <div className={styles.kpiLabel}>Complexity</div>
-        <div className={styles.kpiValue}>{complexity}</div>
+        <div className={styles.kpiValue}>{empty ? '—' : complexity}</div>
       </div>
       <div className={styles.kpiChip}>
         <div className={styles.kpiLabel}>Confidence</div>
-        <div className={styles.kpiValue}>{confidence}</div>
+        <div className={styles.kpiValue}>{empty ? '—' : confidence}</div>
       </div>
     </div>
   );
@@ -654,9 +624,9 @@ function InputsPanel({
       </p>
 
       <div className={styles.exampleBanner}>
-        <b>Example</b>
+        <b>Start here</b>
         <span>
-          The form is pre-loaded with a fictional example scenario ("Southern Cross Distribution"). Overwrite every field with real prospect data before sending the output externally.
+          This estimate starts blank. Fill in the customer profile and select modules below — every KPI, chart and tab updates automatically as you go.
         </span>
       </div>
 
@@ -1499,6 +1469,16 @@ function TableToggle({ headers, rows }) {
 
 // ============================= LICENSING PANEL =============================
 function LicensingPanel({ state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Microsoft Licensing and Costs</h1></div>
+        <p className={styles.panelSub}>Estimated Business Central license mix and recurring cost, based on the customer profile and modules you select.</p>
+        <EmptyState message="Enter total users and select modules on the Inputs tab to see the recommended license mix and cost." />
+      </section>
+    );
+  }
+
   const lic = licensingEngine(state);
   const rows = [
     [lic.fullLicense.name, lic.fullUsers, lic.fullLicense.monthly, lic.fullCostMonthly],
@@ -1585,6 +1565,16 @@ function LicensingPanel({ state }) {
 
 // ============================= DASHBOARD PANEL =============================
 function DashboardPanel({ res, state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Delivery & Estimate Dashboard</h1></div>
+        <p className={styles.panelSub}>Indicative Pre-Sales Estimate. Subject to Discovery and Validation.</p>
+        <EmptyState message="No estimate yet. Go to the Inputs tab, enter the customer profile and select modules — every chart here will populate automatically." />
+      </section>
+    );
+  }
+
   const weeks = durationWeeks(res.total);
   const months = (weeks / 4.345).toFixed(1);
   const team = peakFTE(res.total, weeks);
@@ -1722,7 +1712,17 @@ const PHASE_META = {
   transition: { dep: "Hypercare", roles: "Support Consultant, PM", deliverable: "Handover to support model" }
 };
 
-function TimelinePanel({ weeks }) {
+function TimelinePanel({ weeks, state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Delivery Timeline</h1></div>
+        <p className={styles.panelSub}>Indicative phase plan based on the current scope.</p>
+        <EmptyState message="No timeline yet. Enter the customer profile and select modules on the Inputs tab to generate a phase plan." />
+      </section>
+    );
+  }
+
   const plan = timelinePlan(weeks);
   return (
     <section className={styles.panel}>
@@ -1769,7 +1769,17 @@ function TimelinePanel({ weeks }) {
   );
 }
 
-function TeamPanel({ res, weeks }) {
+function TeamPanel({ res, weeks, state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Project Team & Customer Responsibilities</h1></div>
+        <p className={styles.panelSub}>Recommended delivery team, sized to the current scope.</p>
+        <EmptyState message="No team recommendation yet. Select modules on the Inputs tab to see the recommended delivery team and roles." />
+      </section>
+    );
+  }
+
   const roleEntries = effortByRole(res.ws);
   const team = peakFTE(res.total, weeks);
   return (
@@ -1808,6 +1818,16 @@ function TeamPanel({ res, weeks }) {
 }
 
 function GovernancePanel({ state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Assumptions, Exclusions & Risks</h1></div>
+        <p className={styles.panelSub}>Generated from the current inputs.</p>
+        <EmptyState message="No assumptions or risks yet. These are generated from your inputs — start filling in the Inputs tab." />
+      </section>
+    );
+  }
+
   const asmp = assumptions(state);
   const rk = risks(state);
   const probClass = (p) => (p === 'High' ? styles.critical : p === 'Medium' ? styles.warning : styles.good);
@@ -1868,6 +1888,16 @@ function GovernancePanel({ state }) {
 }
 
 function DiscoveryPanel({ state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Discovery Questions</h1></div>
+        <p className={styles.panelSub}>Generated from the current inputs and prioritised by commercial impact.</p>
+        <EmptyState message="No discovery questions yet. Start filling in the Inputs tab and the most commercially important questions will appear here." />
+      </section>
+    );
+  }
+
   const q = discoveryQuestions(state);
   return (
     <section className={styles.panel}>
@@ -1896,6 +1926,16 @@ function DiscoveryPanel({ state }) {
 }
 
 function ExecutivePanel({ res, state, weeks, team, conf }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>Executive Summary</h1></div>
+        <p className={styles.panelSub}>Indicative Pre-Sales Estimate. Subject to Discovery and Validation.</p>
+        <EmptyState message="No executive summary yet. Fill in the Inputs tab and this narrative will be generated automatically from your data." />
+      </section>
+    );
+  }
+
   const c = state.customer;
   const low = runEngine(bestCaseState(state)).total;
   const high = runEngine(worstCaseState(state)).total;
@@ -2014,6 +2054,16 @@ function qualitativeComplexity(total) {
 }
 
 function ScenariosPanel({ state }) {
+  if (isEstimateEmpty(state)) {
+    return (
+      <section className={styles.panel}>
+        <div className={styles.panelHead}><h1>What-If / Scenario Analysis</h1></div>
+        <p className={styles.panelSub}>Three deployment postures built on your customer profile and module scope.</p>
+        <EmptyState message="No scenarios yet. Fill in the Inputs tab first — scenarios are built on top of your actual profile and module scope." />
+      </section>
+    );
+  }
+
   const scA = scenarioVariant(state, 'A');
   const scB = scenarioVariant(state, 'B');
   const scC = scenarioVariant(state, 'C');
