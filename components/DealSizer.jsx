@@ -158,18 +158,17 @@ function getDefaultState() {
   };
 }
 
-// True until the user has actually told us something about the deal: no
-// customer name, no modules, no integrations. Every KPI and chart is real
-// math on top of state, but that math still returns fixed program-overhead
-// hours (PM, discovery, architecture...) even with nothing selected - so
-// panels check this flag and show a plain empty-state message instead of
-// numbers that would otherwise look like a real (if small) estimate.
+// True until the user has actually defined scope: no modules and no
+// integrations selected. Every KPI and chart is real math on top of state,
+// but that math still returns fixed program-overhead hours (PM, discovery,
+// architecture...) even with nothing selected, so panels check this flag
+// and show a plain empty-state message instead of numbers that would
+// otherwise look like a real (if small) estimate. Customer name is
+// deliberately NOT part of this check - it isn't a cost driver, so typing
+// a name alone must not unlock computed numbers that don't reflect any
+// actual scope yet.
 function isEstimateEmpty(state) {
-  return (
-    !state.customer.name.trim() &&
-    state.modules.size === 0 &&
-    state.integrations.length === 0
-  );
+  return state.modules.size === 0 && state.integrations.length === 0;
 }
 
 function EmptyState({ message }) {
@@ -219,6 +218,10 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
   const [state, setState] = useState(getDefaultState());
   const [activePanel, setActivePanel] = useState("inputs");
   const [loaded, setLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | saved | error
+  const saveTimerRef = useRef(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Load any previously saved estimate for this browser session
   useEffect(() => {
@@ -233,17 +236,33 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
       .finally(() => setLoaded(true));
   }, []);
 
-  // Autosave the estimate to the database whenever it changes (debounced)
+  const saveEstimate = () => {
+    setSaveStatus('saving');
+    return fetch('/api/estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: serializeState(stateRef.current) }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error('Save failed');
+        setSaveStatus('saved');
+      })
+      .catch(() => setSaveStatus('error'));
+  };
+
+  const saveNow = () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveEstimate();
+  };
+
+  // Autosave the estimate to the database whenever it changes (debounced).
+  // The Save button (saveNow) shares this same saveEstimate() call so both
+  // paths write through the identical code path.
   useEffect(() => {
     if (!loaded) return;
-    const timer = setTimeout(() => {
-      fetch('/api/estimate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: serializeState(state) }),
-      }).catch(() => {});
-    }, 800);
-    return () => clearTimeout(timer);
+    saveTimerRef.current = setTimeout(saveEstimate, 800);
+    return () => clearTimeout(saveTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, loaded]);
 
   const res = useMemo(() => runEngine(state), [state]);
@@ -461,14 +480,28 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
           <div className={styles.userInfo}>
             👤 Logged in as: <strong>{contact}</strong>
           </div>
-          {onLogout && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span className={`${styles.saveStatus} ${saveStatus === 'saved' ? styles.saved : ''} ${saveStatus === 'error' ? styles.error : ''}`}>
+              {saveStatus === 'saving' && 'Saving…'}
+              {saveStatus === 'saved' && '✓ Saved'}
+              {saveStatus === 'error' && 'Save failed'}
+            </span>
             <button
-              className={styles.logoutBtn}
-              onClick={onLogout}
+              className={styles.saveBtn}
+              onClick={saveNow}
+              disabled={saveStatus === 'saving'}
             >
-              🚪 Logout
+              💾 Save
             </button>
-          )}
+            {onLogout && (
+              <button
+                className={styles.logoutBtn}
+                onClick={onLogout}
+              >
+                🚪 Logout
+              </button>
+            )}
+          </div>
         </div>
         <KpiBar
           empty={isEstimateEmpty(state)}
@@ -1387,20 +1420,35 @@ function useChart(canvasRef, buildConfig, deps) {
   const chartRef = useRef(null);
   useEffect(() => {
     let cancelled = false;
+    if (chartRef.current) {
+      // Update the existing instance in place instead of destroying and
+      // recreating it - destroy+recreate replays the "grow from zero" entry
+      // animation on every keystroke and cancels it mid-flight on the next
+      // change, which is why the charts looked static/snapped rather than
+      // animated. chart.js's own update() call animates the transition
+      // between the old values and the new ones.
+      const config = buildConfig();
+      chartRef.current.data = config.data;
+      if (config.options) chartRef.current.options = config.options;
+      chartRef.current.update();
+      return undefined;
+    }
     import('chart.js/auto').then(({ default: Chart }) => {
       if (cancelled || !canvasRef.current) return;
-      if (chartRef.current) chartRef.current.destroy();
       chartRef.current = new Chart(canvasRef.current.getContext('2d'), buildConfig());
     });
     return () => {
       cancelled = true;
-      if (chartRef.current) {
-        chartRef.current.destroy();
-        chartRef.current = null;
-      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
+
+  useEffect(() => () => {
+    if (chartRef.current) {
+      chartRef.current.destroy();
+      chartRef.current = null;
+    }
+  }, []);
 }
 
 function HBarChart({ labels, data, color, unit }) {
