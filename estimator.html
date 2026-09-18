@@ -246,13 +246,8 @@ details.tbl-toggle summary::-webkit-details-marker{display:none;}
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
-<script type="module">
-'use strict';
-console.log('[BC Estimator] Script loading...');
-</script>
 <script>
 'use strict';
-console.log('[BC Estimator] Initializing...');
 /* ============================= CONFIG DATA ============================= */
 
 const INDUSTRIES = ["Manufacturing","Distribution","Wholesale","Retail","Professional Services","Construction","Engineering","Automotive","Food & Beverage","Pharmaceuticals / Life Sciences","Healthcare","Non-Profit","Technology","Media","Real Estate","Other"];
@@ -361,6 +356,7 @@ const CUSTOM_ITEMS = [
 ];
 const CUSTOM_LEVEL_BASE = {"No customization":0,"Minimal customization":40,"Moderate customization":120,"Significant customization":280,"Extensive customization":520};
 
+/* Microsoft Dynamics 365 Business Central license pricing, sourced from Microsoft Learn and the published Dynamics 365 Licensing Guide (Microsoft US list price, per user per month, billed annually, current as of the November 2025 price update). See learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/deployment/licensing for the licensing model this is based on. Local CSP or partner pricing may vary from list price and this is not a quote. */
 const BC_LICENSES = [
   {id:"essentials", name:"Business Central Essentials", monthly:80, desc:"Full user. Finance, sales, purchasing, inventory, project accounting and basic warehousing."},
   {id:"premium", name:"Business Central Premium", monthly:110, desc:"Full user. Everything in Essentials plus manufacturing and service order management."},
@@ -369,15 +365,13 @@ const BC_LICENSES = [
   {id:"extaccountant", name:"External Accountant", monthly:0, desc:"Up to 3 free per tenant for the customer's external accountant or bookkeeper, same rights as a full user minus admin tasks."},
   {id:"m365read", name:"Microsoft 365 read access", monthly:0, desc:"Internal users on qualifying Microsoft 365 plans get free read-only access to Business Central data in Microsoft Teams, provided the tenant holds at least one Business Central license."},
 ];
-
 function needsPremium(modSet){
   const premiumModIds = ["prodbom","routings","prodorders","capacity","mrp","mfgcosting","shopfloor","svcmgmt","svcorders","svccontracts","svcitems"];
   return premiumModIds.some(id=>modSet.has(id));
 }
-
-function licensingEngine(s){
-  const c = s.customer;
-  const premium = needsPremium(s.modules);
+function licensingEngine(state){
+  const c = state.customer;
+  const premium = needsPremium(state.modules);
   const finance = Math.max(0, c.financeUsers||0);
   const ops = Math.max(0, c.opsUsers||0);
   const wh = Math.max(0, c.whUsers||0);
@@ -399,7 +393,6 @@ function licensingEngine(s){
   return {premium, fullUsers, teamMembers, extAccountants, extBeyondFree, fullLicense, teamLicense,
     fullCostMonthly, teamCostMonthly, extCostMonthly, totalMonthly, totalAnnual, totalUsers};
 }
-
 function renderLicensing(res){
   const lic = licensingEngine(state);
   const el = document.getElementById('panel-licensing');
@@ -475,38 +468,1163 @@ function defaultState(){
   };
 }
 let state = defaultState();
-console.log('[BC Estimator] State initialized');
 
-/* ... rest of the script ... (truncated for brevity) */
+/* ============================= ENGINE HELPERS ============================= */
+function userBandIndex(u){ if(u<=10)return 0; if(u<=25)return 1; if(u<=75)return 2; if(u<=150)return 3; if(u<=300)return 4; return 5; }
+const BAND_ADD=[0,.05,.15,.30,.45,.62];
+function userBandFactor(u){ return 1+BAND_ADD[userBandIndex(u)]; }
+function industryFactor(level){ return {Low:0.92,Medium:1.0,High:1.15,"Very High":1.32}[level]||1; }
+function companiesFactor(n){ return 1+Math.min(0.55, 0.18*Math.max(0,n-1)); }
+function round5(n){ return Math.round(n/5)*5; }
+function sum(arr){ return arr.reduce((a,b)=>a+b,0); }
+function fmtH(n){ return Math.round(n).toLocaleString('en-AU'); }
+
+function modulesByWs(modSet, ws){ return MODULES.filter(m=>modSet.has(m.id) && m.ws===ws); }
+function moduleHours(modSet, ws){ return sum(modulesByWs(modSet,ws).map(m=>m.h)); }
+
+/* ============================= CORE ENGINE ============================= */
+// Runs the full bottom-up model against a (possibly adjusted) state snapshot.
+function runEngine(s){
+  const c = s.customer;
+  const uf = userBandFactor(c.users);
+  const cof = companiesFactor(c.companies);
+  const indf = industryFactor(c.industryComplexity);
+  const A = s.complexity.areas;
+  const af = k => CFACTOR[A[k]] || 1;
+
+  const ws = {}; // workstream hours
+  ws.discovery = 50 + s.modules.size*1.3 + (c.companies-1)*12 + s.challenges.size*1.6;
+  ws.discovery *= indf;
+
+  ws.finance = moduleHours(s.modules,'finance') * af('finance') * uf * cof;
+  ws.sales = moduleHours(s.modules,'sales') * af('sales') * uf * cof;
+  ws.purchasing = moduleHours(s.modules,'purchasing') * af('purchasing') * uf * cof;
+  ws.inventory = moduleHours(s.modules,'inventory') * af('inventory') * uf * cof;
+  ws.warehouse = moduleHours(s.modules,'warehouse') * af('warehouse') * uf * cof;
+  ws.manufacturing = moduleHours(s.modules,'manufacturing') * af('manufacturing') * uf * cof;
+  ws.projects = moduleHours(s.modules,'projects') * af('projects') * uf * cof;
+  ws.service = moduleHours(s.modules,'service') * af('service') * uf * cof;
+
+  const reportingModuleHrs = moduleHours(s.modules,'reporting');
+  const reportingItemHrs = sum([...s.reporting.items].map(id=>{
+    const it = REPORTING_ITEMS.find(r=>r[0]===id); return it? it[2]:0;
+  }));
+  ws.reporting = (reportingModuleHrs + reportingItemHrs) * af('reporting') * (CFACTOR[s.reporting.complexity]||1);
+
+  ws.integrations = sum(s.integrations.map(row=>{
+    let h = INT_COMPLEXITY_HOURS[row.complexity]||90;
+    h *= (row.direction==='Bidirectional')?1.28:(row.direction==='Outbound'?1.08:1.0);
+    h *= (row.mode==='Real-time')?1.22:1.0;
+    h *= 1 + Math.max(0,(row.interfaces||1)-1)*0.18;
+    return h;
+  })) * af('integrations');
+
+  const custModuleHrs = moduleHours(s.modules,'customization');
+  const custItemHrs = sum(CUSTOM_ITEMS.map(([key,label,unit])=> (s.customization.items[key]||0)*unit ));
+  ws.customization = (CUSTOM_LEVEL_BASE[s.customization.level]||0 + custModuleHrs + custItemHrs) * af('customization');
+
+  // migration
+  const migEntityHrs = sum([...s.migration.scope].map(id=>{ const it=MIGRATION_SCOPE.find(m=>m[0]===id); return it?it[2]:0; }));
+  const migCf = CFACTOR[s.migration.complexity]||1;
+  const migDq = {Excellent:0.85,Good:1.0,Moderate:1.25,Poor:1.6,Unknown:1.42}[s.migration.dataQuality]||1;
+  const migCyclesF = 1 + (Math.max(1,s.migration.cycles)-1)*0.35;
+  const migCutover = 20 + c.companies*8;
+  ws.migration = (migEntityHrs*migCf*migDq*migCyclesF + migCutover) * cof;
+
+  ws.architecture = 45 + s.integrations.length*9 + (Object.keys(CUSTOM_LEVEL_BASE).indexOf(s.customization.level))*13 + (c.companies-1)*10 + (s.localization.multiCountry?20:0);
+  ws.security = 25 + userBandIndex(c.users)*9 + (c.companies-1)*8 + (c.extUsers>0?15:0);
+
+  const preTest = ws.finance+ws.sales+ws.purchasing+ws.inventory+ws.warehouse+ws.manufacturing+ws.projects+ws.service+ws.reporting+ws.integrations+ws.customization;
+  ws.testing = 0.22*preTest;
+
+  ws.training = 16 + Math.min(c.users,500)*0.34 + (c.companies-1)*6;
+  if(s.delivery.model!=='Big Bang') ws.training *= 1.12;
+
+  ws.deployment = 30 + c.companies*10 + (s.delivery.model!=='Big Bang'?24:0) + ws.migration*0.05;
+  ws.hypercare = 40 + userBandIndex(c.users)*9 + c.companies*6 + (s.support.model==='24x7'?22:s.support.model==='24x5'?12:0);
+  ws.documentation = 0.05*(preTest+ws.migration);
+
+  const prePM = ws.discovery+ws.architecture+ws.finance+ws.sales+ws.purchasing+ws.inventory+ws.warehouse+ws.manufacturing+ws.projects+ws.service+
+    ws.reporting+ws.integrations+ws.customization+ws.migration+ws.security+ws.testing+ws.training+ws.deployment+ws.hypercare+ws.documentation;
+  ws.pm = 0.13*prePM;
+
+  const base = prePM + ws.pm;
+
+  const contPctMap = {Simple:10,Moderate:15,Complex:20,"Highly Complex":25};
+  const contPct = (s.contingencyOverride!=null? s.contingencyOverride : (contPctMap[s.complexity.overall]||15));
+  const contingency = base*(contPct/100);
+  const total = base+contingency;
+
+  // support (monthly, recurring - separate commercial dimension)
+  const supBase = {Low:40,Medium:80,High:140,"Very High":220}[s.support.ticketVolume]||80;
+  const supScale = 1+userBandIndex(c.users)*0.11;
+  const supScopeAdd = Math.max(0,s.support.scope.size-3)*8;
+  const supSla = {Standard:1.0,"Business Critical":1.25,Enterprise:1.5}[s.support.sla]||1;
+  const supModel = {"Business hours":1.0,"Extended business hours":1.15,"24x5":1.35,"24x7":1.6}[s.support.model]||1;
+  const monthlySupport = (supBase*supScale+supScopeAdd)*supSla*supModel;
+
+  return {ws, base, contPct, contingency, total, monthlySupport, annualSupport: monthlySupport*12, uf, cof, indf};
+}
+
+function cloneState(s){
+  return {
+    customer:{...s.customer}, challenges:new Set(s.challenges), modules:new Set(s.modules),
+    complexity:{overall:s.complexity.overall, areas:{...s.complexity.areas}},
+    migration:{...s.migration, scope:new Set(s.migration.scope)},
+    integrations: s.integrations.map(r=>({...r})),
+    customization:{level:s.customization.level, items:{...s.customization.items}},
+    reporting:{items:new Set(s.reporting.items), complexity:s.reporting.complexity},
+    localization:{...s.localization}, delivery:{...s.delivery}, support:{...s.support, scope:new Set(s.support.scope)},
+    contingencyOverride:s.contingencyOverride
+  };
+}
+function bumpArea(level,dir){
+  const order=["Low","Medium","High","Very High"]; let i=order.indexOf(level);
+  i = Math.max(0, Math.min(order.length-1, i+dir));
+  return order[i];
+}
+function bestCaseState(s){
+  const v = cloneState(s);
+  v.migration.dataQuality='Excellent';
+  v.migration.cycles = Math.max(1, s.migration.cycles-1);
+  v.delivery.availability='High';
+  Object.keys(v.complexity.areas).forEach(k=> v.complexity.areas[k]=bumpArea(v.complexity.areas[k],-1));
+  v.contingencyOverride = Math.max(6,(v.contingencyOverride!=null?v.contingencyOverride:{Simple:10,Moderate:15,Complex:20,"Highly Complex":25}[v.complexity.overall]||15)-6);
+  return v;
+}
+function worstCaseState(s){
+  const v = cloneState(s);
+  v.migration.dataQuality='Poor';
+  v.migration.cycles = s.migration.cycles+1;
+  v.delivery.availability='Low';
+  Object.keys(v.complexity.areas).forEach(k=> v.complexity.areas[k]=bumpArea(v.complexity.areas[k],1));
+  v.contingencyOverride = (v.contingencyOverride!=null?v.contingencyOverride:{Simple:10,Moderate:15,Complex:20,"Highly Complex":25}[v.complexity.overall]||15)+6;
+  return v;
+}
+
+/* ============================= ROLE ALLOCATION ============================= */
+const ROLE_MAP = {
+  discovery:[["Solution Architect",.40],["Project Manager",.30],["Finance Consultant",.15],["Supply Chain Consultant",.15]],
+  architecture:[["Solution Architect",.80],["Technical Architect",.20]],
+  pm:[["Project Manager",1]],
+  finance:[["Finance Consultant",1]],
+  sales:[["Supply Chain Consultant",1]],
+  purchasing:[["Supply Chain Consultant",1]],
+  inventory:[["Supply Chain Consultant",1]],
+  warehouse:[["Supply Chain Consultant",.9],["Technical Architect",.1]],
+  manufacturing:[["Manufacturing Consultant",1]],
+  projects:[["Service / Projects Consultant",1]],
+  service:[["Service / Projects Consultant",1]],
+  reporting:[["BI / Reporting Consultant",.9],["Technical Architect",.1]],
+  integrations:[["Integration Developer",.85],["Technical Architect",.15]],
+  customization:[["AL Developer",.8],["Technical Architect",.2]],
+  migration:[["Data Migration Consultant",.9],["AL Developer",.1]],
+  security:[["Technical Architect",.7],["AL Developer",.3]],
+  testing:[["Tester",.85],["Project Manager",.15]],
+  training:[["Trainer",.9],["Project Manager",.1]],
+  deployment:[["Project Manager",.4],["Technical Architect",.3],["Data Migration Consultant",.3]],
+  hypercare:[["Support Consultant",.6],["Finance Consultant",.2],["AL Developer",.2]],
+  documentation:[["Project Manager",.5],["Solution Architect",.5]],
+};
+const WS_LABELS = {discovery:"Discovery / Analysis",architecture:"Solution Architecture",pm:"Project Management",finance:"Finance",sales:"Sales",
+  purchasing:"Purchasing",inventory:"Inventory",warehouse:"Warehouse",manufacturing:"Manufacturing",projects:"Projects",service:"Service",
+  reporting:"Reporting",integrations:"Integrations",customization:"Customization / AL",migration:"Data Migration",security:"Security / Permissions",
+  testing:"Testing",training:"Training",deployment:"Deployment / Cutover",hypercare:"Hypercare",documentation:"Documentation"};
+const WS_ORDER = ["discovery","architecture","pm","finance","sales","purchasing","inventory","warehouse","manufacturing","projects","service",
+  "reporting","integrations","customization","migration","security","testing","training","deployment","hypercare","documentation"];
+
+function effortByRole(ws){
+  const roles = {};
+  WS_ORDER.forEach(k=>{
+    (ROLE_MAP[k]||[]).forEach(([role,pct])=>{ roles[role]=(roles[role]||0)+ws[k]*pct; });
+  });
+  return Object.entries(roles).filter(([,h])=>h>0.5).sort((a,b)=>b[1]-a[1]);
+}
+
+/* ============================= TIMELINE / TEAM ============================= */
+function durationWeeks(totalEffort){ return Math.max(8, Math.min(64, Math.round(3 + totalEffort/225))); }
+function peakFTE(totalEffort, weeks){ return Math.max(2, Math.min(22, Math.round(totalEffort/(weeks*31)))); }
+
+// phase: [key,label,startPct,durPct,parallel]
+const PHASES = [
+  ["mobilization","Mobilisation",0,5,false],
+  ["discovery","Discovery",4,10,false],
+  ["design","Solution Design",12,13,false],
+  ["config","Configuration",23,20,false],
+  ["dev","Development (AL / integrations)",26,20,true],
+  ["migration","Data Migration",30,18,true],
+  ["intdev","Integration Development",30,15,true],
+  ["testing","Testing",44,16,false],
+  ["uat","User Acceptance Testing",57,10,false],
+  ["training","Training",62,9,true],
+  ["cutover","Cutover Preparation",68,7,false],
+  ["golive","Go-Live",75,2,false],
+  ["hypercare","Hypercare",77,10,false],
+  ["transition","Transition to Support",85,6,false],
+];
+function timelinePlan(weeks){
+  return PHASES.map(([key,label,sp,dp,par])=>{
+    const start = Math.round(weeks*sp/100);
+    const dur = Math.max(1, Math.round(weeks*dp/100));
+    return {key,label,start, dur, end:start+dur, parallel:par};
+  });
+}
+
+function confidenceScore(s){
+  let known=0, total=11;
+  if(s.customer.concurrentUsers>0) known++;
+  if(s.customer.companies>0) known++;
+  if(s.modules.size>0) known++;
+  if(s.migration.dataQuality!=='Unknown') known++;
+  if(s.migration.scope.size>0) known++;
+  if(s.integrations.length>0 || !s.challenges.has('integration_problems')) known++;
+  if(s.customization.level!=='No customization' || Object.values(s.customization.items).every(v=>v===0)) known++;
+  if(s.localization.country) known++;
+  if(s.customer.targetDate) known++;
+  if(s.delivery.availability!=='Unknown') known++;
+  if(s.support.ticketVolume) known++;
+  const pct = known/total;
+  const level = pct>=0.82?"High":pct>=0.55?"Medium":"Low";
+  return {known,total,pct,level};
+}
+
+/* ============================= DISCOVERY QUESTIONS ============================= */
+function discoveryQuestions(s){
+  const crit=[], imp=[], nice=[];
+  if(!s.customer.concurrentUsers) crit.push("What is the expected number of concurrent users vs. total named users?");
+  if(s.migration.dataQuality==='Unknown'||s.migration.dataQuality==='Poor') crit.push(`What is the actual data quality / state of the legacy system(s) (${s.migration.source})? A data quality assessment should precede final pricing.`);
+  if(s.integrations.length===0 && s.challenges.has('integration_problems')) crit.push("Which systems must integrate with Business Central, and what protocols / APIs do they expose?");
+  if(!s.customer.targetDate) crit.push("Is there a fixed go-live date driving the timeline, and what is it anchored to (e.g. financial year-end, contract expiry)?");
+  if(s.customer.companies>1) crit.push(`How will intercompany transactions and eliminations be handled across the ${s.customer.companies} companies / ${s.customer.entities} legal entities?`);
+  if(s.localization.multiCountry && !s.localization.statutory) crit.push("What statutory reporting and e-invoicing requirements apply in each operating country?");
+  if((s.customization.level==='Significant customization'||s.customization.level==='Extensive customization') && Object.values(s.customization.items).reduce((a,b)=>a+b,0)===0) crit.push("What specific custom functionality is required beyond standard Business Central, and why can't it be met with configuration?");
+
+  if(!s.support.ticketVolume) imp.push("What is the expected support ticket volume post go-live, based on the legacy environment's history?");
+  if(s.reporting.complexity==='High' && !s.modules.has('powerbi')) imp.push("Should Power BI be scoped as part of this engagement, or is reporting/BI handled by the customer's own team?");
+  if(s.migration.cycles<=1 && (s.migration.dataQuality==='Poor'||s.migration.dataQuality==='Unknown')) imp.push("Given current data quality, should an additional mock migration cycle be budgeted before cutover?");
+  if(["Manufacturing","Food & Beverage","Pharmaceuticals / Life Sciences","Automotive"].includes(s.customer.industry) && !MODULES.some(m=>m.ws==='manufacturing'&&s.modules.has(m.id))) imp.push("Is manufacturing functionality required, or is production planning/execution managed outside Business Central?");
+  if(s.customer.extUsers>0) imp.push(`What access model is required for the ${s.customer.extUsers} external users (customer/vendor self-service, licensing type)?`);
+  imp.push("Which third-party ISV extensions (if any) are already in use or planned, and have they been validated against the target BC version?");
+
+  nice.push("What training delivery model is preferred (train-the-trainer, role-based classroom, self-paced)?");
+  nice.push("What is the required retention period for historical data not migrated into Business Central?");
+  nice.push("What sandbox / environment strategy is expected (number of environments, refresh cadence)?");
+  nice.push("Are there change-management or communications resources on the customer side to support adoption?");
+  return {crit,imp,nice};
+}
+
+/* ============================= ASSUMPTIONS / EXCLUSIONS / RISKS ============================= */
+function assumptions(s){
+  const c=s.customer;
+  const rows = [
+    ["A001", `Estimate covers ${c.companies} compan${c.companies===1?'y':'ies'} / ${c.entities} legal entit${c.entities===1?'y':'ies'} as specified.`, "Additional entities increase Finance, Security, Testing and Training effort.", "+10–20% per additional company"],
+    ["A002", `${c.users} total users (${c.concurrentUsers||'TBC'} concurrent) at go-live.`, "Materially higher user counts increase Security, Training and Testing effort.", "Scales with user band"],
+    ["A003", `Module scope limited to the ${s.modules.size} modules currently selected.`, "Adding modules post-signoff is treated as change request.", "Directly additive per module"],
+    ["A004", `Legacy data quality assumed ${s.migration.dataQuality.toLowerCase()}, sourced from ${s.migration.source}.`, "Poor/unknown data quality drives rework and additional migration cycles.", "±25–60% on Migration workstream"],
+    ["A005", `${s.migration.cycles} migration cycle(s) (mock + final) included.`, "Additional cycles required if reconciliation fails UAT sign-off.", "+35% of Migration per extra cycle"],
+    ["A006", `${s.integrations.length} integration(s) in scope as listed.`, "Undiscovered integrations are excluded until specified and estimated.", "Additive per integration (40–165h base)"],
+    ["A007", `Customisation scope: ${s.customization.level.toLowerCase()}.`, "Scope creep into bespoke development increases AL effort and testing.", "Directly additive"],
+    ["A008", `Delivery model: ${s.delivery.model}, ~${s.delivery.remotePct}% remote delivery.`, "On-site-heavy delivery increases cost and reduces schedule flexibility.", "Affects duration, not base effort"],
+    ["A009", `Customer resource availability assumed ${s.delivery.availability.toLowerCase()}.`, "Low availability extends timeline and increases PM / re-planning effort.", "Extends duration 15–30%"],
+    ["A010", `Localisation: ${s.localization.country}${s.localization.multiCountry?' + additional countries':''}, standard BC localisation ${s.localization.standardAvailable==='Yes'?'available':'not confirmed'}.`, "Non-standard localisation requires bespoke statutory development.", "+15–40% on Finance/Customisation"],
+    ["A011", `Reporting scope: ${[...s.reporting.items].length} report categories at ${s.reporting.complexity.toLowerCase()} complexity.`, "Additional regulatory/statutory reports add develop-and-test effort.", "Additive per report category"],
+    ["A012", `Historical transaction migration limited to agreed scope (${[...s.migration.scope].length} data categories); full history not assumed unless listed.`, "Full historical migration significantly increases Migration effort.", "+30–70% on Migration if expanded"],
+    ["A013", `Target go-live: ${c.targetDate||'not yet fixed'}.`, "A fixed, compressed date may require additional concurrent resourcing.", "Affects team size, not base effort"],
+    ["A014", `Support model: ${s.support.model}, ${s.support.sla} SLA, ${s.support.ticketVolume.toLowerCase()} expected ticket volume.`, "Underestimated ticket volume affects recurring cost, not the one-off estimate.", "Recurring, separate from implementation"],
+    ["A015", "Customer provides a single accountable product owner and named subject-matter experts for each functional area.", "Absent SME availability drives elongated discovery and rework.", "Extends duration; PM effort +10–15%"],
+  ];
+  return rows;
+}
+
+const EXCLUSIONS_BASE = [
+  "Microsoft licensing (Business Central, Power Platform, Power BI, Microsoft 365).",
+  "Third-party ISV licensing and any associated ISV implementation effort not named in scope.",
+  "Hardware, networking and on-premises infrastructure.",
+  "Extensive legacy data cleansing beyond the agreed migration scope.",
+  "Historical transaction migration beyond the data categories listed in the Migration Strategy.",
+  "Integrations not explicitly listed in the Integration Scope.",
+  "Custom functionality identified after discovery sign-off (treated as change request).",
+  "Major business process re-design outside the agreed functional scope.",
+  "Regulatory or statutory changes introduced after this estimate is issued.",
+  "Customer-side project resourcing (product owner, SMEs, data owners, UAT testers).",
+];
+
+function risks(s){
+  const R = [
+    {t:"Poor / unreconciled legacy data quality delays migration sign-off.", cond: s.migration.dataQuality==='Poor'||s.migration.dataQuality==='Unknown', prob:"High", impact:"High",
+      mit:"Run a data quality assessment in Discovery; budget a dedicated cleansing pass ahead of mock migration."},
+    {t:"Requirements remain unclear going into Configuration.", cond: confidenceScore(s).level!=='High', prob:"Medium", impact:"High",
+      mit:"Time-box Discovery with formal sign-off of the Solution Design document before Configuration starts."},
+    {t:"Customisation scope expands beyond standard Business Central functionality.", cond: s.customization.level==='Significant customization'||s.customization.level==='Extensive customization', prob:"Medium", impact:"High",
+      mit:"Apply a fit-gap workshop; require architecture sign-off before any custom development is scheduled."},
+    {t:"Integration dependencies on third-party vendors slip the schedule.", cond: s.integrations.length>=2, prob:"Medium", impact:"Medium",
+      mit:"Confirm third-party technical contacts and API availability during Discovery; sequence integration dev early."},
+    {t:"Customer resource / SME availability constrains progress.", cond: s.delivery.availability==='Low', prob:"High", impact:"Medium",
+      mit:"Agree a resourcing plan and RACI with the customer sponsor before Configuration begins."},
+    {t:"Compressed timeline forces parallel workstreams beyond safe capacity.", cond: !!s.customer.targetDate, prob:"Medium", impact:"Medium",
+      mit:"Validate the target date against the phase plan in Discovery; flag conflicts immediately."},
+    {t:"Localisation complexity (multi-country / multi-tax) exceeds standard BC coverage.", cond: s.localization.multiCountry||s.localization.multiTax, prob:"Medium", impact:"High",
+      mit:"Validate standard localisation coverage per country before pricing statutory development."},
+    {t:"Third-party ISV extensions conflict with target BC version or planned customisation.", cond: true, prob:"Low", impact:"Medium",
+      mit:"Audit installed extensions during Discovery; confirm compatibility with target version."},
+    {t:"Insufficient testing coverage leads to post-go-live defects.", cond: s.complexity.overall==='Complex'||s.complexity.overall==='Highly Complex', prob:"Medium", impact:"High",
+      mit:"Formal test plan with traceability to requirements; independent UAT sign-off gate."},
+    {t:"Scope creep via informal change requests.", cond: true, prob:"Medium", impact:"Medium",
+      mit:"Enforce a change-control process from kick-off; log all scope changes against the assumptions register."},
+    {t:"Delayed customer decisions on design options stall Configuration.", cond: true, prob:"Medium", impact:"Medium",
+      mit:"Set decision SLAs in the project charter; escalate via steering committee if breached."},
+    {t:"Migration reconciliation discrepancies found late in cutover.", cond: s.migration.cycles<=1, prob: s.migration.cycles<=1?"High":"Low", impact:"High",
+      mit:"Run a full mock migration with financial reconciliation at least two weeks prior to final cutover."},
+  ];
+  return R.map(r=>({...r, prob: r.cond? r.prob : "Low"}));
+}
+
+function recommendationText(s, res){
+  const c=s.customer;
+  const modLabels = [...s.modules].map(id=>MODULES.find(m=>m.id===id)?.label).filter(Boolean);
+  const topAreas = ["finance","sales","purchasing","inventory","warehouse","manufacturing","projects","service"].filter(k=>res.ws[k]>10).map(k=>WS_LABELS[k]);
+  return `Based on the current inputs, a ${s.delivery.model.toLowerCase()} Business Central implementation is recommended, with ${topAreas.slice(0,5).join(', ')||'core Finance'} delivered during the initial phase${c.companies>1?`, sequenced across the ${c.companies} companies to manage cutover risk`:''}. `+
+  `Migration should cover the ${[...s.migration.scope].length} data categories currently agreed (master data and opening balances), with historical transactions retained in ${s.migration.source} for reference unless validated as a hard requirement. `+
+  `${s.integrations.length>0?`The ${s.integrations.length} integration(s) in scope should be delivered alongside the relevant functional workstream rather than as a late-stage activity. `:''}`+
+  `A structured UAT, cutover and hypercare period should precede transition to the proposed ${s.support.model} support model at ${s.support.sla} SLA. `+
+  `${s.customization.level==='Significant customization'||s.customization.level==='Extensive customization'?'Given the customisation level indicated, a dedicated architecture review is recommended before development is scheduled.':'Standard Business Central functionality should be favoured over customisation wherever the fit-gap analysis allows.'}`;
+}
+
+/* ============================= NAV / KPI BAR ============================= */
+const NAV_ITEMS = [["inputs","Inputs"],["licensing","Licensing &amp; Costs"],["dashboard","Dashboard"],["timeline","Timeline"],["team","Team"],["governance","Governance"],["discovery","Discovery Qs"],["exec","Executive Summary"],["scenarios","Scenarios"],["resources","Videos &amp; How-To"]];
+let activePanel = "inputs";
+
+function renderNav(){
+  const nav = document.getElementById('navList');
+  nav.innerHTML = NAV_ITEMS.map(([id,label],i)=>`<button class="nav-item${id===activePanel?' active':''}" data-panel="${id}"><span class="num">${i+1}</span>${label}</button>`).join('');
+  nav.querySelectorAll('.nav-item').forEach(btn=> btn.addEventListener('click', ()=> switchPanel(btn.dataset.panel)));
+}
+function switchPanel(id){
+  activePanel = id;
+  document.querySelectorAll('.panel').forEach(p=> p.classList.toggle('active', p.id==='panel-'+id));
+  renderNav();
+  window.scrollTo({top:0,behavior:'instant'});
+}
+
+function renderKpiBar(res){
+  const s=state; const weeks = durationWeeks(res.total); const months = (weeks/4.345).toFixed(1);
+  const team = peakFTE(res.total, weeks);
+  const conf = confidenceScore(s);
+  const chips = [
+    ["Expected effort", fmtH(res.total)+" h", true],
+    ["Duration", months+" mo", false],
+    ["Team (peak)", team+" FTE", false],
+    ["Monthly support", fmtH(res.monthlySupport)+" h", false],
+    ["Complexity", s.complexity.overall, false],
+    ["Confidence", conf.level, false],
+  ];
+  document.getElementById('kpibar').innerHTML = chips.map(([l,v,acc])=>`<div class="kpi-chip${acc?' accent':''}"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+}
+
+/* ============================= SHARED UI HELPERS ============================= */
+function chipGroupHtml(items, selectedSet, dataAttr){
+  return `<div class="chip-group">`+items.map(([id,label])=>
+    `<label class="chip${selectedSet.has(id)?' checked':''}"><input type="checkbox" ${dataAttr}="${id}" ${selectedSet.has(id)?'checked':''}> ${label}</label>`
+  ).join('')+`</div>`;
+}
+function selectHtml(id, options, current){
+  return `<select id="${id}">`+options.map(o=>`<option value="${o}" ${o===current?'selected':''}>${o}</option>`).join('')+`</select>`;
+}
+function wireChipGroup(container, dataAttr, targetSet, onAfter){
+  container.querySelectorAll(`input[${dataAttr}]`).forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const id = inp.getAttribute(dataAttr);
+      if(inp.checked) targetSet.add(id); else targetSet.delete(id);
+      inp.closest('.chip').classList.toggle('checked', inp.checked);
+      onAfter && onAfter();
+      recomputeAndRender();
+    });
+  });
+}
+
+/* ============================= INPUTS PANEL ============================= */
+function renderInputs(){
+  const s = state; const c = s.customer;
+  const el = document.getElementById('panel-inputs');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Pre-Sales Inputs</h1></div>
+  <p class="panel-sub">Configure the prospect profile below. Every output tab recalculates instantly. Fields are pre-filled with an example scope; replace them with the actual prospect's details.</p>
+  <div class="example-banner"><b>SRC</b><span>Pre-filled from the "What Success Looks Like" discovery document and email correspondence with Leanne Huynh and Stephanie Chenoweth. Users (10 core / 20 lite), modules and migration scope are estimates pending discovery sign-off, adjust as more detail is confirmed.</span></div>
+  ${(()=>{ const lic=licensingEngine(s); return `
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;margin-bottom:6px">Microsoft Licensing Snapshot</h3>
+    <p style="color:var(--text-2);font-size:12.5px;margin:0 0 12px">Based on Microsoft Learn licensing guidance for Business Central. Full breakdown on the Licensing and Costs tab.</p>
+    <div class="commercial-grid">
+      <div class="cg-item"><div class="l">Recommended tier</div><div class="v">${lic.premium?'Premium':'Essentials'}</div></div>
+      <div class="cg-item"><div class="l">Full users</div><div class="v">${lic.fullUsers} at $${lic.fullLicense.monthly}/mo</div></div>
+      <div class="cg-item"><div class="l">Team members</div><div class="v">${lic.teamMembers} at $${lic.teamLicense.monthly}/mo</div></div>
+      <div class="cg-item"><div class="l">Est. annual license cost</div><div class="v">$${lic.totalAnnual.toLocaleString('en-AU')}</div></div>
+    </div>
+  </div>`; })()}
+
+  <details class="acc" open>
+    <summary><span class="badge-num">1</span>Customer Profile<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid">
+        <div class="field"><label>Customer name</label><input type="text" id="f_name" value="${c.name}"></div>
+        <div class="field"><label>Country / region</label><input type="text" id="f_country" value="${c.country}"></div>
+        <div class="field"><label>Legal entities</label><input type="number" min="1" id="f_entities" value="${c.entities}"></div>
+        <div class="field"><label>Companies</label><input type="number" min="1" id="f_companies" value="${c.companies}"></div>
+        <div class="field"><label>Locations</label><input type="number" min="1" id="f_locations" value="${c.locations}"></div>
+        <div class="field"><label>Warehouses</label><input type="number" min="0" id="f_warehouses" value="${c.warehouses}"></div>
+        <div class="field"><label>Total users</label><input type="number" min="1" id="f_users" value="${c.users}"></div>
+        <div class="field"><label>Concurrent users (if known)</label><input type="number" min="0" id="f_concurrentUsers" value="${c.concurrentUsers}"></div>
+        <div class="field"><label>Finance users</label><input type="number" min="0" id="f_financeUsers" value="${c.financeUsers}"></div>
+        <div class="field"><label>Operational users</label><input type="number" min="0" id="f_opsUsers" value="${c.opsUsers}"></div>
+        <div class="field"><label>Warehouse users</label><input type="number" min="0" id="f_whUsers" value="${c.whUsers}"></div>
+        <div class="field"><label>Manufacturing users</label><input type="number" min="0" id="f_mfgUsers" value="${c.mfgUsers}"></div>
+        <div class="field"><label>External users</label><input type="number" min="0" id="f_extUsers" value="${c.extUsers}"></div>
+        <div class="field"><label>Expected annual transaction volume</label><input type="text" id="f_txnVolume" value="${c.txnVolume}"></div>
+        <div class="field"><label>Expected growth rate</label><input type="text" id="f_growthRate" value="${c.growthRate}"></div>
+        <div class="field"><label>Implementation target date</label><input type="date" id="f_targetDate" value="${c.targetDate}"></div>
+        <div class="field"><label>Preferred go-live strategy</label>${selectHtml('f_goLiveStrategy',["Big Bang","Phased rollout","Pilot + rollout","Country-by-country","Company-by-company","Module-by-module"],c.goLiveStrategy)}</div>
+      </div>
+    </div>
+  </details>
+
+  <details class="acc" open>
+    <summary><span class="badge-num">2</span>Industry<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid">
+        <div class="field"><label>Industry</label>${selectHtml('f_industry',INDUSTRIES,c.industry)}</div>
+        <div class="field"><label>Industry complexity</label>${selectHtml('f_industryComplexity',["Low","Medium","High","Very High"],c.industryComplexity)}</div>
+      </div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">3</span>Business Challenges<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body" id="challengesBody"></div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">4</span>Business Central Module Selection<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body" id="modulesBody"></div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">5</span>Implementation Complexity<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field"><label>Overall complexity</label>${selectHtml('f_overallComplexity',["Simple","Moderate","Complex","Highly Complex"],s.complexity.overall)}</div>
+        <div class="field"><label>Contingency override %</label><input type="number" min="0" max="60" id="f_contingency" value="${s.contingencyOverride!=null?s.contingencyOverride:''}" placeholder="auto"></div>
+      </div>
+      <table class="ctable" id="complexityTable"></table>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">6</span>Migration<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field"><label>Source system</label>${selectHtml('f_migSource',MIGRATION_SOURCES,s.migration.source)}</div>
+        <div class="field"><label>Migration complexity</label>${selectHtml('f_migComplexity',["Low","Medium","High","Very High"],s.migration.complexity)}</div>
+        <div class="field"><label>Data quality</label>${selectHtml('f_migDataQuality',["Excellent","Good","Moderate","Poor","Unknown"],s.migration.dataQuality)}</div>
+        <div class="field"><label>Migration cycles</label>${selectHtml('f_migCycles',["1","2","3","4+"],String(s.migration.cycles)+(s.migration.cycles>=4?'':''))}</div>
+      </div>
+      <div class="section-label">Migration scope</div>
+      <div id="migScopeBody"></div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">7</span>Integrations<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div id="integrationsBody"></div>
+      <button class="btn sm" id="addIntegration" style="margin-top:6px">+ Add integration</button>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">8</span>Customization<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field" style="grid-column:1/-1;max-width:320px"><label>Customization level</label>${selectHtml('f_custLevel',Object.keys(CUSTOM_LEVEL_BASE),s.customization.level)}</div>
+      </div>
+      <div class="section-label">Estimated items</div>
+      <div class="field-grid" id="custItemsBody"></div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">9</span>Reporting<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div id="reportingBody"></div>
+      <div class="field-grid" style="margin-top:14px;max-width:260px">
+        <div class="field"><label>Reporting complexity</label>${selectHtml('f_reportingComplexity',["Low","Medium","High"],s.reporting.complexity)}</div>
+      </div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">10</span>Localization<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field"><label>Country</label><input type="text" id="f_locCountry" value="${s.localization.country}"></div>
+        <div class="field"><label>Standard localisation available?</label>${selectHtml('f_locStandard',["Yes","No","Unknown"],s.localization.standardAvailable)}</div>
+      </div>
+      <div class="section-label">&nbsp;</div>
+      <div class="chip-group" id="locFlagsBody"></div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">11</span>Delivery Model<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field"><label>Delivery model</label>${selectHtml('f_delModel',["Big Bang","Phased rollout","Pilot + rollout","Country-by-country","Company-by-company","Module-by-module"],s.delivery.model)}</div>
+        <div class="field"><label>Remote delivery %</label><input type="number" min="0" max="100" id="f_remotePct" value="${s.delivery.remotePct}"></div>
+        <div class="field"><label>Customer availability</label>${selectHtml('f_availability',["High","Medium","Low","Unknown"],s.delivery.availability)}</div>
+        <div class="field"><label>Time-zone complexity</label>${selectHtml('f_tzComplexity',["Low","Medium","High"],s.delivery.timezoneComplexity)}</div>
+      </div>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary><span class="badge-num">12</span>Support<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="field-grid" style="margin-top:0">
+        <div class="field"><label>Support model</label>${selectHtml('f_supModel',["Business hours","Extended business hours","24x5","24x7"],s.support.model)}</div>
+        <div class="field"><label>SLA</label>${selectHtml('f_supSla',["Standard","Business Critical","Enterprise"],s.support.sla)}</div>
+        <div class="field"><label>Expected ticket volume</label>${selectHtml('f_supTickets',["Low","Medium","High","Very High"],s.support.ticketVolume)}</div>
+      </div>
+      <div class="section-label">Support scope</div>
+      <div id="supportScopeBody"></div>
+    </div>
+  </details>
+  `;
+
+  // simple field bindings
+  const bind = (id, path, transform) => {
+    const elx = document.getElementById(id);
+    elx.addEventListener('input', ()=>{
+      let v = elx.value;
+      if(transform) v = transform(v);
+      const [obj,key] = path();
+      obj[key] = v;
+      recomputeAndRender();
+    });
+  };
+  bind('f_name', ()=>[c,'name']);
+  bind('f_country', ()=>[c,'country']);
+  bind('f_entities', ()=>[c,'entities'], v=>+v||1);
+  bind('f_companies', ()=>[c,'companies'], v=>+v||1);
+  bind('f_locations', ()=>[c,'locations'], v=>+v||0);
+  bind('f_warehouses', ()=>[c,'warehouses'], v=>+v||0);
+  bind('f_users', ()=>[c,'users'], v=>+v||1);
+  bind('f_concurrentUsers', ()=>[c,'concurrentUsers'], v=>+v||0);
+  bind('f_financeUsers', ()=>[c,'financeUsers'], v=>+v||0);
+  bind('f_opsUsers', ()=>[c,'opsUsers'], v=>+v||0);
+  bind('f_whUsers', ()=>[c,'whUsers'], v=>+v||0);
+  bind('f_mfgUsers', ()=>[c,'mfgUsers'], v=>+v||0);
+  bind('f_extUsers', ()=>[c,'extUsers'], v=>+v||0);
+  bind('f_txnVolume', ()=>[c,'txnVolume']);
+  bind('f_growthRate', ()=>[c,'growthRate']);
+  bind('f_targetDate', ()=>[c,'targetDate']);
+  bind('f_goLiveStrategy', ()=>[c,'goLiveStrategy']);
+  bind('f_industry', ()=>[c,'industry']);
+  bind('f_industryComplexity', ()=>[c,'industryComplexity']);
+  bind('f_overallComplexity', ()=>[s.complexity,'overall']);
+  bind('f_contingency', ()=>[s,'contingencyOverride'], v=> v===''? null : (+v));
+  bind('f_migSource', ()=>[s.migration,'source']);
+  bind('f_migComplexity', ()=>[s.migration,'complexity']);
+  bind('f_migDataQuality', ()=>[s.migration,'dataQuality']);
+  bind('f_migCycles', ()=>[s.migration,'cycles'], v=> v==='4+'?4:+v);
+  bind('f_custLevel', ()=>[s.customization,'level']);
+  bind('f_reportingComplexity', ()=>[s.reporting,'complexity']);
+  bind('f_locCountry', ()=>[s.localization,'country']);
+  bind('f_locStandard', ()=>[s.localization,'standardAvailable']);
+  bind('f_delModel', ()=>[s.delivery,'model']);
+  bind('f_remotePct', ()=>[s.delivery,'remotePct'], v=>+v||0);
+  bind('f_availability', ()=>[s.delivery,'availability']);
+  bind('f_tzComplexity', ()=>[s.delivery,'timezoneComplexity']);
+  bind('f_supModel', ()=>[s.support,'model']);
+  bind('f_supSla', ()=>[s.support,'sla']);
+  bind('f_supTickets', ()=>[s.support,'ticketVolume']);
+
+  renderChallenges(); renderModules(); renderComplexityTable(); renderMigScope(); renderIntegrations();
+  renderCustItems(); renderReporting(); renderLocFlags(); renderSupportScope();
+
+  document.getElementById('addIntegration').addEventListener('click', ()=>{
+    s.integrations.push({id:INT_SEQ++, name:'New integration', category:INTEGRATION_CATEGORIES[0], direction:'Outbound', complexity:'Medium', mode:'Batch', interfaces:1});
+    renderIntegrations(); recomputeAndRender();
+  });
+}
+
+function renderChallenges(){
+  const body = document.getElementById('challengesBody');
+  body.innerHTML = chipGroupHtml(CHALLENGES, state.challenges, 'data-challenge');
+  wireChipGroup(body, 'data-challenge', state.challenges);
+}
+function renderModules(){
+  const body = document.getElementById('modulesBody');
+  body.innerHTML = `<div class="mgrid">`+MODULE_GROUPS.map(g=>{
+    const items = MODULES.filter(m=>m.group===g).map(m=>[m.id,m.label]);
+    return `<div class="mgroup"><h4>${g}</h4>${chipGroupHtml(items, state.modules, 'data-module')}</div>`;
+  }).join('')+`</div>`;
+  wireChipGroup(body, 'data-module', state.modules);
+}
+function renderComplexityTable(){
+  const t = document.getElementById('complexityTable');
+  t.innerHTML = `<thead><tr><th>Area</th><th>Rating</th></tr></thead><tbody>`+
+    AREA_KEYS.map(([k,label])=>`<tr><td class="rowlabel">${label}</td><td>${selectHtml('area_'+k,["Low","Medium","High","Very High"],state.complexity.areas[k])}</td></tr>`).join('')
+    +`</tbody>`;
+  AREA_KEYS.forEach(([k])=>{
+    document.getElementById('area_'+k).addEventListener('change', e=>{ state.complexity.areas[k]=e.target.value; recomputeAndRender(); });
+  });
+}
+function renderMigScope(){
+  const body = document.getElementById('migScopeBody');
+  body.innerHTML = chipGroupHtml(MIGRATION_SCOPE.map(m=>[m[0],m[1]]), state.migration.scope, 'data-migscope');
+  wireChipGroup(body, 'data-migscope', state.migration.scope);
+}
+function renderIntegrations(){
+  const body = document.getElementById('integrationsBody');
+  if(state.integrations.length===0){ body.innerHTML = `<p style="color:var(--text-3);font-size:12.5px;margin:0">No integrations added.</p>`; return; }
+  body.innerHTML = state.integrations.map(row=>`
+    <div class="int-row" data-row="${row.id}">
+      <div class="row-top"><strong>${row.name||'Untitled integration'}</strong><button class="btn ghost sm" data-remove="${row.id}">Remove</button></div>
+      <div class="int-grid">
+        <div class="field"><label>Name</label><input type="text" data-f="name" value="${row.name}"></div>
+        <div class="field"><label>Category</label><select data-f="category">${INTEGRATION_CATEGORIES.map(o=>`<option ${o===row.category?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>Direction</label><select data-f="direction">${["Inbound","Outbound","Bidirectional"].map(o=>`<option ${o===row.direction?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>Complexity</label><select data-f="complexity">${["Low","Medium","High"].map(o=>`<option ${o===row.complexity?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>Mode</label><select data-f="mode">${["Real-time","Batch"].map(o=>`<option ${o===row.mode?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="field"><label># interfaces</label><input type="number" min="1" data-f="interfaces" value="${row.interfaces}"></div>
+      </div>
+    </div>`).join('');
+  body.querySelectorAll('.int-row').forEach(rowEl=>{
+    const id = +rowEl.dataset.row; const row = state.integrations.find(r=>r.id===id);
+    rowEl.querySelectorAll('[data-f]').forEach(inp=>{
+      inp.addEventListener('input', ()=>{
+        const f = inp.dataset.f;
+        row[f] = (f==='interfaces')? (+inp.value||1) : inp.value;
+        if(f==='name') rowEl.querySelector('.row-top strong').textContent = row.name||'Untitled integration';
+        recomputeAndRender();
+      });
+    });
+    rowEl.querySelector('[data-remove]').addEventListener('click', ()=>{
+      state.integrations = state.integrations.filter(r=>r.id!==id);
+      renderIntegrations(); recomputeAndRender();
+    });
+  });
+}
+function renderCustItems(){
+  const body = document.getElementById('custItemsBody');
+  body.innerHTML = CUSTOM_ITEMS.map(([key,label])=>`<div class="field"><label>${label}</label><input type="number" min="0" data-citem="${key}" value="${state.customization.items[key]}"></div>`).join('');
+  body.querySelectorAll('[data-citem]').forEach(inp=>{
+    inp.addEventListener('input', ()=>{ state.customization.items[inp.dataset.citem] = +inp.value||0; recomputeAndRender(); });
+  });
+}
+function renderReporting(){
+  const body = document.getElementById('reportingBody');
+  body.innerHTML = chipGroupHtml(REPORTING_ITEMS.map(r=>[r[0],r[1]]), state.reporting.items, 'data-report');
+  wireChipGroup(body, 'data-report', state.reporting.items);
+}
+function renderLocFlags(){
+  const body = document.getElementById('locFlagsBody');
+  const flags = [["multiCountry","Multiple countries"],["multiCurrency","Multiple currencies"],["multiTax","Multiple tax regimes"],
+    ["multiLanguage","Multiple languages"],["statutory","Statutory reporting"],["eInvoicing","Local e-invoicing"],["regulatory","Other regulatory requirements"]];
+  body.innerHTML = flags.map(([k,label])=>`<label class="chip${state.localization[k]?' checked':''}"><input type="checkbox" data-locflag="${k}" ${state.localization[k]?'checked':''}> ${label}</label>`).join('');
+  body.querySelectorAll('[data-locflag]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{ state.localization[inp.dataset.locflag]=inp.checked; inp.closest('.chip').classList.toggle('checked',inp.checked); recomputeAndRender(); });
+  });
+}
+function renderSupportScope(){
+  const body = document.getElementById('supportScopeBody');
+  body.innerHTML = chipGroupHtml(SUPPORT_SCOPE_ITEMS, state.support.scope, 'data-supscope');
+  wireChipGroup(body, 'data-supscope', state.support.scope);
+}
+
+/* ============================= CHART HELPERS ============================= */
+const chartRegistry = {};
+function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function destroyChart(id){ if(chartRegistry[id]){ chartRegistry[id].destroy(); delete chartRegistry[id]; } }
+function baseChartFont(){ return {family: "'IBM Plex Sans', system-ui, sans-serif", size: 11}; }
+
+function hBarChart(canvasId, labels, data, color, unit){
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const ink = cssVar('--chart-ink-2'), grid = cssVar('--chart-grid'), axis = cssVar('--chart-axis');
+  chartRegistry[canvasId] = new Chart(ctx, {
+    type:'bar',
+    data:{labels, datasets:[{data, backgroundColor:color, borderRadius:4, barThickness:16, maxBarThickness:18}]},
+    options:{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>` ${fmtH(c.parsed.x)} ${unit}`}}},
+      scales:{
+        x:{beginAtZero:true, grid:{color:grid, drawTicks:false}, ticks:{color:ink, font:baseChartFont()}, border:{color:axis}},
+        y:{grid:{display:false}, ticks:{color:ink, font:baseChartFont()}, border:{color:axis}}
+      }
+    }
+  });
+}
+function donutChart(canvasId, labels, data, colors){
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const ink = cssVar('--chart-ink-2');
+  chartRegistry[canvasId] = new Chart(ctx, {
+    type:'doughnut',
+    data:{labels, datasets:[{data, backgroundColor:colors, borderColor:cssVar('--chart-surface'), borderWidth:2}]},
+    options:{responsive:true, maintainAspectRatio:false, cutout:'62%',
+      plugins:{legend:{position:'bottom', labels:{color:ink, font:baseChartFont(), boxWidth:10, padding:14}},
+        tooltip:{callbacks:{label:c=>` ${c.label}: ${fmtH(c.parsed)} h`}}}
+    }
+  });
+}
+function vBarChart(canvasId, labels, data, colors, unit){
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const ink = cssVar('--chart-ink-2'), grid = cssVar('--chart-grid'), axis = cssVar('--chart-axis');
+  chartRegistry[canvasId] = new Chart(ctx, {
+    type:'bar',
+    data:{labels, datasets:[{data, backgroundColor:colors, borderRadius:5, maxBarThickness:64}]},
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>` ${fmtH(c.parsed.y)} ${unit}`}},
+        datalabels:false},
+      scales:{
+        x:{grid:{display:false}, ticks:{color:ink, font:baseChartFont()}, border:{color:axis}},
+        y:{beginAtZero:true, grid:{color:grid, drawTicks:false}, ticks:{color:ink, font:baseChartFont()}, border:{color:axis}}
+      }
+    }
+  });
+}
+function tableToggle(headers, rows){
+  return `<details class="tbl-toggle"><summary>Show data table</summary><table class="ctable"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></details>`;
+}
+
+const PHASE_ALLOC = {discovery:'discovery', architecture:'design', finance:'config', sales:'config', purchasing:'config', inventory:'config',
+  warehouse:'config', manufacturing:'config', projects:'config', service:'config', reporting:'config', integrations:'intdev',
+  customization:'dev', migration:'migration', security:'config', testing:'testing', training:'training', deployment:'cutover',
+  hypercare:'hypercare', documentation:'transition'};
+
+/* ============================= DASHBOARD PANEL ============================= */
+function renderDashboard(res){
+  const s = state; const weeks = durationWeeks(res.total); const months=(weeks/4.345).toFixed(1);
+  const team = peakFTE(res.total, weeks); const conf = confidenceScore(s);
+  const low = runEngine(bestCaseState(s)).total, high = runEngine(worstCaseState(s)).total;
+
+  const el = document.getElementById('panel-dashboard');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Delivery &amp; Estimate Dashboard</h1></div>
+  <p class="panel-sub">Indicative Pre-Sales Estimate. Subject to Discovery and Validation. All figures are benchmark-based and traceable to the inputs on the Inputs tab.</p>
+
+  <div class="stat-row">
+    <div class="stat-tile accent"><div class="l">Expected effort</div><div class="v">${fmtH(res.total)}<small> h</small></div></div>
+    <div class="stat-tile"><div class="l">Effort range</div><div class="v" style="font-size:17px">${fmtH(low)}&ndash;${fmtH(high)}<small> h</small></div></div>
+    <div class="stat-tile"><div class="l">Duration</div><div class="v">${months}<small> mo</small></div></div>
+    <div class="stat-tile"><div class="l">Team (peak)</div><div class="v">${team}<small> FTE</small></div></div>
+    <div class="stat-tile"><div class="l">Monthly support</div><div class="v">${fmtH(res.monthlySupport)}<small> h/mo</small></div></div>
+    <div class="stat-tile"><div class="l">Complexity</div><div class="v" style="font-size:17px">${s.complexity.overall}</div></div>
+    <div class="stat-tile"><div class="l">Estimate confidence</div><div class="v" style="font-size:17px"><span class="pill dot ${conf.level==='High'?'good':conf.level==='Medium'?'warning':'critical'}">${conf.level}</span></div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;margin-bottom:8px">Implementation Effort Range</h3>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;font-family:var(--font-mono)">
+      <div><div style="font-size:11px;color:var(--text-3);text-transform:uppercase">Low</div><div style="font-size:19px;font-weight:600">${fmtH(low)} h</div></div>
+      <div><div style="font-size:11px;color:var(--text-3);text-transform:uppercase">Expected</div><div style="font-size:19px;font-weight:600;color:var(--brand)">${fmtH(res.total)} h</div></div>
+      <div><div style="font-size:11px;color:var(--text-3);text-transform:uppercase">High</div><div style="font-size:19px;font-weight:600">${fmtH(high)} h</div></div>
+    </div>
+    <p style="color:var(--text-3);font-size:11.5px;margin:10px 0 0">Low = best case (excellent data quality, one fewer migration cycle, complexity stepped down one band, high customer availability). High = conservative case (poor data quality, one extra migration cycle, complexity stepped up one band, low availability). Never treat as a guaranteed quote.</p>
+  </div>
+
+  <div class="grid2">
+    <div class="chart-card">
+      <h3>Effort by Workstream</h3><div class="cap">Base hours, before contingency</div>
+      <div class="chart-wrap" style="height:${Math.max(260,WS_ORDER.length*22)}px"><canvas id="chartWorkstream"></canvas></div>
+      <div id="tblWorkstream"></div>
+    </div>
+    <div class="chart-card">
+      <h3>Effort by Role</h3><div class="cap">Base hours allocated across delivery roles</div>
+      <div class="chart-wrap" id="roleChartWrap" style="height:260px"><canvas id="chartRole"></canvas></div>
+      <div id="tblRole"></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="chart-card">
+      <h3>Effort by Phase</h3><div class="cap">Base hours (before contingency), functional &amp; technical hours mapped to delivery phase</div>
+      <div class="chart-wrap" style="height:260px"><canvas id="chartPhase"></canvas></div>
+      <div id="tblPhase"></div>
+    </div>
+    <div class="chart-card">
+      <h3>Implementation vs Migration vs Support</h3><div class="cap">Implementation &amp; migration are one-off hours including contingency; support is hours/year</div>
+      <div class="chart-wrap" style="height:260px"><canvas id="chartMix"></canvas></div>
+      <div id="tblMix"></div>
+    </div>
+  </div>
+  <div class="chart-card" style="max-width:560px">
+    <h3>Risk Distribution</h3><div class="cap">Count of register risks by current probability rating</div>
+    <div class="chart-wrap" style="height:220px"><canvas id="chartRisk"></canvas></div>
+    <div id="tblRisk"></div>
+  </div>
+
+  <details class="acc"><summary><span class="badge-num">i</span>Methodology &amp; traceability<span class="chevron">&rsaquo;</span></summary>
+    <div class="acc-body">
+      <div class="method-box">
+        Every workstream is calculated as <code>Base Effort &times; Scope Factor &times; Complexity Factor &times; Data/Integration Factor &times; Deployment Factor</code>.
+        Base effort comes from selected modules, migration data categories, integration rows and customisation counts (estimation benchmarks, not official Microsoft figures).
+        Complexity factors: Low &times;0.82, Medium &times;1.00, High &times;1.32, Very High &times;1.68. User-count and multi-company factors scale functional workstreams; data quality and migration cycles scale the Migration workstream only.
+        Contingency (${res.contPct}% here) is layered on top of the summed workstreams, never hidden inside them, and is NOT included in the Workstream, Role or Phase charts above &mdash; only in the KPI bar, the Implementation vs Migration split, and the Executive Summary. Change any input on the Inputs tab and every figure on this page recalculates immediately.
+      </div>
+    </div>
+  </details>
+  `;
+
+  // Workstream chart (exclude near-zero to keep it legible)
+  const wsEntries = WS_ORDER.map(k=>[WS_LABELS[k], res.ws[k]]).filter(([,v])=>v>0.5).sort((a,b)=>b[1]-a[1]);
+  hBarChart('chartWorkstream', wsEntries.map(e=>e[0]), wsEntries.map(e=>Math.round(e[1])), cssVar('--series-1'), 'h');
+  document.getElementById('tblWorkstream').innerHTML = tableToggle(['Workstream','Hours'], wsEntries.map(([l,v])=>[l, fmtH(v)]));
+
+  // Role chart
+  const roleEntries = effortByRole(res.ws);
+  document.getElementById('roleChartWrap').style.height = Math.max(260, roleEntries.length*24)+'px';
+  hBarChart('chartRole', roleEntries.map(e=>e[0]), roleEntries.map(e=>Math.round(e[1])), cssVar('--series-7'), 'h');
+  document.getElementById('tblRole').innerHTML = tableToggle(['Role','Hours'], roleEntries.map(([l,v])=>[l, fmtH(v)]));
+
+  // Phase chart
+  const phaseHours = {}; PHASES.forEach(p=>phaseHours[p[0]]=0);
+  WS_ORDER.forEach(k=>{ if(k==='pm') return; const target = PHASE_ALLOC[k]; if(target!=null) phaseHours[target]=(phaseHours[target]||0)+res.ws[k]; });
+  const pmSplit = res.ws.pm/4;
+  ['mobilization','discovery','design','config'].forEach(p=> phaseHours[p]=(phaseHours[p]||0)+pmSplit);
+  const phaseEntries = PHASES.map(p=>[p[1], phaseHours[p[0]]||0]).filter(([,v])=>v>0.5);
+  vBarChart('chartPhase', phaseEntries.map(e=>e[0]), phaseEntries.map(e=>Math.round(e[1])), cssVar('--series-3'), 'h');
+  document.getElementById('tblPhase').innerHTML = tableToggle(['Phase','Hours'], phaseEntries.map(([l,v])=>[l, fmtH(v)]));
+
+  // Mix chart — apply contingency proportionally to migration and non-migration hours
+  // so this split (and its total) matches res.total exactly, consistent with the KPI bar.
+  const migShare = res.base>0 ? res.ws.migration/res.base : 0;
+  const migWithContingency = res.ws.migration + res.contingency*migShare;
+  const implHours = res.total - migWithContingency;
+  const mixLabels = ['Implementation (one-off h)','Migration (one-off h)','Support (h / year)'];
+  const mixData = [Math.round(implHours), Math.round(migWithContingency), Math.round(res.annualSupport)];
+  donutChart('chartMix', mixLabels, mixData, [cssVar('--series-1'), cssVar('--series-2'), cssVar('--series-3')]);
+  document.getElementById('tblMix').innerHTML = tableToggle(['Category','Hours'], mixLabels.map((l,i)=>[l, fmtH(mixData[i])]));
+
+  // Risk distribution
+  const rk = risks(s); const counts = {Low:0,Medium:0,High:0};
+  rk.forEach(r=> counts[r.prob]=(counts[r.prob]||0)+1);
+  vBarChart('chartRisk', ['Low','Medium','High'], [counts.Low,counts.Medium,counts.High], [cssVar('--chart-good'),cssVar('--chart-warning'),cssVar('--chart-critical')], 'risks');
+  document.getElementById('tblRisk').innerHTML = tableToggle(['Probability','Count of risks'], [['Low',counts.Low],['Medium',counts.Medium],['High',counts.High]]);
+}
+
+/* ============================= TIMELINE PANEL ============================= */
+function renderTimeline(res){
+  const weeks = durationWeeks(res.total);
+  const plan = timelinePlan(weeks);
+  const el = document.getElementById('panel-timeline');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Delivery Timeline</h1></div>
+  <p class="panel-sub">Indicative phase plan over ${weeks} weeks (~${(weeks/4.345).toFixed(1)} months). Bars in <span style="color:var(--series-3);font-weight:600">green</span> run in parallel with the phase above rather than adding sequentially.</p>
+  <div class="card">
+    <div class="timeline">
+      ${plan.map(p=>`<div class="tl-row">
+        <div class="tl-label">${p.label}<span class="wk">wk ${p.start}&ndash;${p.end}</span></div>
+        <div class="tl-track"><div class="tl-bar${p.parallel?' parallel':''}" style="left:${(p.start/weeks*100).toFixed(1)}%;width:${Math.max(2,(p.dur/weeks*100)).toFixed(1)}%"></div></div>
+      </div>`).join('')}
+    </div>
+    <div class="tl-axis"><div></div><div class="ax"><span>Week 0</span><span>Week ${Math.round(weeks/2)}</span><span>Week ${weeks}</span></div></div>
+  </div>
+  <table class="reg-table" style="margin-top:20px">
+    <thead><tr><th>Phase</th><th>Duration</th><th>Dependencies</th><th>Primary roles</th><th>Key deliverable</th></tr></thead>
+    <tbody>
+      ${phaseMeta(plan).map(r=>`<tr><td><strong>${r.label}</strong></td><td class="mono">${r.dur} wk</td><td>${r.dep}</td><td>${r.roles}</td><td>${r.deliverable}</td></tr>`).join('')}
+    </tbody>
+  </table>
+  `;
+}
+function phaseMeta(plan){
+  const meta = {
+    mobilization:{dep:"Contract signature",roles:"PM",deliverable:"Kick-off, environment provisioning, project charter"},
+    discovery:{dep:"Mobilisation",roles:"SA, PM, Functional Consultants",deliverable:"Current-state review, fit-gap"},
+    design:{dep:"Discovery sign-off",roles:"SA, Functional Consultants",deliverable:"Solution Design Document"},
+    config:{dep:"Design sign-off",roles:"Functional Consultants",deliverable:"Configured environment"},
+    dev:{dep:"Design sign-off (parallel to Configuration)",roles:"AL Developer, Technical Architect",deliverable:"Extensions &amp; customisations built"},
+    migration:{dep:"Design sign-off (parallel to Configuration)",roles:"Data Migration Consultant",deliverable:"Mapped, cleansed, staged data"},
+    intdev:{dep:"Design sign-off (parallel to Configuration)",roles:"Integration Developer",deliverable:"Integrations built &amp; unit tested"},
+    testing:{dep:"Configuration, Development, Migration",roles:"Tester, Functional Consultants",deliverable:"System &amp; integration test results"},
+    uat:{dep:"Testing complete",roles:"Customer SMEs, PM",deliverable:"UAT sign-off"},
+    training:{dep:"UAT (parallel to Cutover Prep)",roles:"Trainer",deliverable:"Trained end users"},
+    cutover:{dep:"UAT sign-off",roles:"PM, Data Migration Consultant",deliverable:"Cutover runbook rehearsed"},
+    golive:{dep:"Cutover Preparation",roles:"Full delivery team",deliverable:"Live in production"},
+    hypercare:{dep:"Go-Live",roles:"Support Consultant, Functional Consultants",deliverable:"Stabilised operation"},
+    transition:{dep:"Hypercare",roles:"Support Consultant, PM",deliverable:"Handover to support model"},
+  };
+  return plan.map(p=>({label:p.label, dur:p.dur, ...meta[p.key]}));
+}
+
+/* ============================= TEAM PANEL ============================= */
+const ROLE_RESPONSIBILITIES = {
+  "Project Manager":"Overall delivery ownership, governance, RAID log, steering committee reporting.",
+  "Solution Architect":"End-to-end solution design, fit-gap, cross-module consistency, design authority.",
+  "Finance Consultant":"Finance module configuration, financial reporting, fit-gap for GL/AP/AR/FA.",
+  "Supply Chain Consultant":"Sales, purchasing, inventory and warehouse configuration and testing support.",
+  "Manufacturing Consultant":"Production BOM, routings, capacity and shop-floor configuration.",
+  "Service / Projects Consultant":"Jobs, service management and project costing configuration.",
+  "Technical Architect":"Technical design authority, security model, environment strategy, code review.",
+  "AL Developer":"Extension development, table/page extensions, business logic, custom APIs.",
+  "Integration Developer":"Integration design, build and testing against third-party systems.",
+  "Data Migration Consultant":"Data mapping, cleansing support, migration tooling, reconciliation.",
+  "BI / Reporting Consultant":"Report and Power BI dashboard development.",
+  "Tester":"Test planning, system and integration test execution, defect management.",
+  "Trainer":"Training material development and delivery, adoption support.",
+  "Support Consultant":"Hypercare and steady-state functional/technical support.",
+};
+const CUSTOMER_RESPONSIBILITIES = [
+  "Nominate a single accountable product owner for the engagement.",
+  "Provide named subject-matter experts for each in-scope functional area.",
+  "Own data cleansing and validation ahead of each migration cycle.",
+  "Execute User Acceptance Testing within agreed windows.",
+  "Approve design documents, test results and cutover readiness at each stage gate.",
+  "Provide integration and infrastructure/security contacts as required.",
+  "Resource and attend training sessions.",
+  "Make timely business decisions on open design questions.",
+  "Approve final cutover and go-live.",
+];
+function renderTeam(res){
+  const weeks = durationWeeks(res.total);
+  const team = peakFTE(res.total, weeks);
+  const roleEntries = effortByRole(res.ws);
+  const el = document.getElementById('panel-team');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Project Team &amp; Customer Responsibilities</h1></div>
+  <p class="panel-sub">Recommended delivery team of ${team} peak FTE across ${roleEntries.length} roles, sized to the current scope.</p>
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;margin-bottom:14px">Recommended delivery team</h3>
+    ${roleEntries.map(([role,hrs])=>{
+      const fte = Math.max(0.1, hrs/(weeks*31));
+      const pct = Math.min(100, Math.round(fte*100));
+      return `<div class="role-bar-row"><div>${role}</div><div class="role-bar-track"><div class="role-bar-fill" style="width:${pct}%"></div></div><div class="mono">${fte.toFixed(1)} FTE</div></div>`;
+    }).join('')}
+    <p style="color:var(--text-3);font-size:11.5px;margin-top:10px">FTE = role hours &divide; (project duration in weeks &times; ~31 productive hours/week). Indicative involvement, not a resourcing commitment.</p>
+  </div>
+  <table class="reg-table" style="margin-bottom:24px">
+    <thead><tr><th>Role</th><th>Hours</th><th>Peak FTE</th><th>Responsibilities</th></tr></thead>
+    <tbody>${roleEntries.map(([role,hrs])=>`<tr><td><strong>${role}</strong></td><td class="mono">${fmtH(hrs)}</td><td class="mono">${Math.max(0.1,hrs/(weeks*31)).toFixed(1)}</td><td>${ROLE_RESPONSIBILITIES[role]||''}</td></tr>`).join('')}</tbody>
+  </table>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:10px">Customer responsibilities</h3>
+    <ul style="margin:0;padding-left:20px;font-size:13px;color:var(--text-2)">${CUSTOMER_RESPONSIBILITIES.map(r=>`<li style="margin-bottom:7px">${r}</li>`).join('')}</ul>
+    <p style="color:var(--text-3);font-size:11.5px;margin-top:10px">These activities are excluded from partner effort above and must be resourced by the customer.</p>
+  </div>
+  `;
+}
+
+/* ============================= GOVERNANCE PANEL ============================= */
+function renderGovernance(res){
+  const s = state;
+  const el = document.getElementById('panel-governance');
+  const asmp = assumptions(s); const rk = risks(s);
+  const probPill = p => `<span class="pill ${p==='High'?'critical':p==='Medium'?'warning':'good'}">${p}</span>`;
+  el.innerHTML = `
+  <div class="panel-head"><h1>Assumptions, Exclusions &amp; Risks</h1></div>
+  <p class="panel-sub">Everything below is explicit and generated from the current inputs. Nothing is buried in narrative text.</p>
+
+  <h3 style="font-size:14px;margin:4px 0 10px">Assumptions register</h3>
+  <table class="reg-table" style="margin-bottom:26px">
+    <thead><tr><th style="width:50px">ID</th><th>Assumption</th><th>Impact if incorrect</th><th>Estimate impact</th></tr></thead>
+    <tbody>${asmp.map(([id,a,imp,est])=>`<tr><td class="mono">${id}</td><td>${a}</td><td>${imp}</td><td class="mono">${est}</td></tr>`).join('')}</tbody>
+  </table>
+
+  <h3 style="font-size:14px;margin:4px 0 10px">Exclusions</h3>
+  <div class="card" style="margin-bottom:26px">
+    <ul style="margin:0;padding-left:20px;font-size:13px;color:var(--text-2)">${EXCLUSIONS_BASE.map(x=>`<li style="margin-bottom:7px">${x}</li>`).join('')}</ul>
+  </div>
+
+  <h3 style="font-size:14px;margin:4px 0 10px">Risk register</h3>
+  <table class="reg-table">
+    <thead><tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Mitigation</th></tr></thead>
+    <tbody>${rk.map(r=>`<tr><td>${r.t}</td><td>${probPill(r.prob)}</td><td>${probPill(r.impact)}</td><td>${r.mit}</td></tr>`).join('')}</tbody>
+  </table>
+  `;
+}
+
+/* ============================= DISCOVERY PANEL ============================= */
+function renderDiscovery(res){
+  const s = state; const q = discoveryQuestions(s);
+  const el = document.getElementById('panel-discovery');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Discovery Questions</h1></div>
+  <p class="panel-sub">Generated from the current inputs and prioritised by commercial impact. Answering the Critical items first is most likely to move the estimate.</p>
+  <div class="qa-col">
+    <div class="qa-card crit"><h4>Critical</h4><ul>${q.crit.map(x=>`<li>${x}</li>`).join('')||'<li>None outstanding for the current inputs.</li>'}</ul></div>
+    <div class="qa-card imp"><h4>Important</h4><ul>${q.imp.map(x=>`<li>${x}</li>`).join('')}</ul></div>
+    <div class="qa-card nice"><h4>Nice to have</h4><ul>${q.nice.map(x=>`<li>${x}</li>`).join('')}</ul></div>
+  </div>
+  `;
+}
+
+/* ============================= EXECUTIVE SUMMARY PANEL ============================= */
+function renderExec(res){
+  const s = state; const c = s.customer; const weeks = durationWeeks(res.total); const months=(weeks/4.345).toFixed(1);
+  const team = peakFTE(res.total, weeks); const conf = confidenceScore(s);
+  const low = runEngine(bestCaseState(s)).total, high = runEngine(worstCaseState(s)).total;
+  const drivers = WS_ORDER.filter(k=>!['pm','documentation','discovery'].includes(k)).map(k=>[WS_LABELS[k],res.ws[k]]).sort((a,b)=>b[1]-a[1]).slice(0,6).map(d=>d[0]);
+  const modLabels = [...s.modules].map(id=>MODULES.find(m=>m.id===id)?.label).filter(Boolean);
+  const confChecks = [
+    ["Concurrent users known", c.concurrentUsers>0],["Company count known", c.companies>0],["Module selection made", s.modules.size>0],
+    ["Migration data quality known", s.migration.dataQuality!=='Unknown'],["Migration scope defined", s.migration.scope.size>0],
+    ["Integration scope defined", s.integrations.length>0 || !s.challenges.has('integration_problems')],
+    ["Customisation scope indicated", true],["Localisation confirmed", !!s.localization.country],["Target go-live known", !!c.targetDate],
+    ["Customer availability known", s.delivery.availability!=='Unknown'],["Support ticket volume estimated", !!s.support.ticketVolume],
+  ];
+  const el = document.getElementById('panel-exec');
+  el.innerHTML = `
+  <div class="panel-head"><h1>Executive Summary</h1></div>
+  <p class="panel-sub">Indicative Pre-Sales Estimate. Subject to Discovery and Validation.</p>
+
+  <div class="exec-block"><h3>What is being implemented</h3><p>A Microsoft Dynamics 365 Business Central implementation for ${c.name||'the prospect'}, covering ${modLabels.length} modules across ${c.companies} compan${c.companies===1?'y':'ies'} and ${c.users} users, delivered as a ${s.delivery.model.toLowerCase()}.</p></div>
+  <div class="exec-block"><h3>Why the solution is required</h3><p>${[...s.challenges].map(id=>CHALLENGES.find(x=>x[0]===id)?.[1]).filter(Boolean).join(', ')||'To be confirmed with the prospect during Discovery.'}</p></div>
+  <div class="exec-block"><h3>Business Central scope</h3><p>${modLabels.slice(0,14).join(', ')}${modLabels.length>14?`, and ${modLabels.length-14} more`:''}.</p></div>
+  <div class="exec-block"><h3>Migration scope</h3><p>Source: ${s.migration.source}. Data categories: ${[...s.migration.scope].map(id=>MIGRATION_SCOPE.find(m=>m[0]===id)?.[1]).filter(Boolean).join(', ')||'to be confirmed'}. Complexity: ${s.migration.complexity}, data quality: ${s.migration.dataQuality}, ${s.migration.cycles} migration cycle(s).</p></div>
+  <div class="exec-block"><h3>Integration scope</h3><p>${s.integrations.length? s.integrations.map(r=>`${r.name} (${r.category}, ${r.direction}, ${r.complexity})`).join('; ') : 'No integrations currently in scope.'}</p></div>
+  <div class="exec-block"><h3>Delivery approach</h3><p>${recommendationText(s,res)}</p></div>
+  <div class="exec-block"><h3>Indicative timeline &amp; effort</h3><p>~${months} months (${weeks} weeks), ${fmtH(res.total)} hours expected (range ${fmtH(low)}&ndash;${fmtH(high)} h), delivered by a peak team of ${team} FTE.</p></div>
+  <div class="exec-block"><h3>Major assumptions</h3><p>${assumptions(s).slice(0,4).map(a=>a[1]).join(' ')}</p></div>
+  <div class="exec-block"><h3>Major risks</h3><p>${risks(s).filter(r=>r.prob==='High').map(r=>r.t).join(' ')||'No high-probability risks flagged against the current inputs.'}</p></div>
+  <div class="exec-block"><h3>Support approach</h3><p>${s.support.model} coverage at ${s.support.sla} SLA, ${fmtH(res.monthlySupport)} hours/month indicative (${fmtH(res.annualSupport)} h/year), following a structured hypercare handover.</p></div>
+
+  <h3 style="font-size:15px;margin:26px 0 4px">Commercial Summary</h3>
+  <div class="card">
+    <div class="commercial-grid">
+      <div class="cg-item"><div class="l">Customer</div><div class="v">${c.name||'Not specified'}</div></div>
+      <div class="cg-item"><div class="l">Industry</div><div class="v">${c.industry}</div></div>
+      <div class="cg-item"><div class="l">Users</div><div class="v">${c.users}</div></div>
+      <div class="cg-item"><div class="l">Companies</div><div class="v">${c.companies}</div></div>
+      <div class="cg-item"><div class="l">Modules</div><div class="v">${modLabels.length} selected</div></div>
+      <div class="cg-item"><div class="l">Implementation complexity</div><div class="v">${s.complexity.overall}</div></div>
+      <div class="cg-item"><div class="l">Migration complexity</div><div class="v">${s.migration.complexity}</div></div>
+      <div class="cg-item"><div class="l">Integration complexity</div><div class="v">${s.complexity.areas.integrations}</div></div>
+      <div class="cg-item"><div class="l">Estimated duration</div><div class="v">${months} months</div></div>
+      <div class="cg-item"><div class="l">Indicative effort</div><div class="v mono">${fmtH(low)} / ${fmtH(res.total)} / ${fmtH(high)} h</div></div>
+      <div class="cg-item"><div class="l">Recommended team</div><div class="v">${team} people (peak)</div></div>
+      <div class="cg-item"><div class="l">Support estimate</div><div class="v">${fmtH(res.monthlySupport)} h/month</div></div>
+      <div class="cg-item"><div class="l">Estimate confidence</div><div class="v">${conf.level}</div></div>
+    </div>
+    <div class="section-label">Primary effort drivers</div>
+    <div class="chip-group">${drivers.map(d=>`<span class="chip" style="cursor:default">${d}</span>`).join('')}</div>
+  </div>
+
+  <h3 style="font-size:15px;margin:26px 0 4px">Estimate Confidence: ${conf.level} (${conf.known}/${conf.total} known)</h3>
+  <div class="card">
+    <div class="chip-group">${confChecks.map(([label,ok])=>`<span class="pill ${ok?'good':'warning'} dot">${label}</span>`).join('')}</div>
+    <p style="color:var(--text-2);font-size:12.5px;margin-top:12px">${conf.level==='High'?'Most major cost drivers are known, so this estimate can support a scoped proposal with limited caveats.':conf.level==='Medium'?'Several major variables remain unconfirmed, so treat this as directional and prioritise the Critical discovery questions before quoting firmly.':'Significant discovery is still required, so this estimate should be positioned internally only, not shared as a firm figure.'}</p>
+  </div>
+  <div class="footer-note">Generated by the Microsoft Business Central Estimator for Raven Labs / GKB Labs pre-sales use. Figures are estimation benchmarks, not official Microsoft guidance, and are not a binding quote.</div>
+  `;
+}
+
+/* ============================= SCENARIOS PANEL ============================= */
+function scenarioVariant(tier){
+  const v = cloneState(state);
+  if(tier==='A'){
+    v.customization.level='Minimal customization';
+    v.migration.cycles = 1;
+    v.reporting.complexity='Low';
+    v.integrations = state.integrations.slice(0,1);
+    Object.keys(v.complexity.areas).forEach(k=>{ if(v.complexity.areas[k]==='High'||v.complexity.areas[k]==='Very High') v.complexity.areas[k]='Medium'; });
+  } else if(tier==='B'){
+    if(v.customization.level==='No customization') v.customization.level='Moderate customization';
+  } else if(tier==='C'){
+    const order=Object.keys(CUSTOM_LEVEL_BASE); let i=order.indexOf(v.customization.level); i=Math.min(order.length-1,i+1); v.customization.level=order[i];
+    v.migration.cycles = state.migration.cycles+1;
+    v.reporting.complexity='High';
+    v.integrations = state.integrations.concat([
+      {id:9001,name:'Additional system A',category:'Custom application',direction:'Bidirectional',complexity:'High',mode:'Real-time',interfaces:2},
+      {id:9002,name:'Additional system B',category:'Legacy application',direction:'Bidirectional',complexity:'Medium',mode:'Batch',interfaces:2}]);
+    Object.keys(v.complexity.areas).forEach(k=> v.complexity.areas[k]=bumpArea(v.complexity.areas[k],1));
+  }
+  return v;
+}
+function qualitativeComplexity(total){ return total<900?'Low':total<1800?'Medium':total<3200?'High':'Very High'; }
+function renderScenarios(){
+  const scA = scenarioVariant('A'), scB = scenarioVariant('B'), scC = scenarioVariant('C');
+  const resA = runEngine(scA), resB = runEngine(scB), resC = runEngine(scC);
+  const rows = [
+    ['Effort (h)', fmtH(resA.total), fmtH(resB.total), fmtH(resC.total)],
+    ['Duration', (durationWeeks(resA.total)/4.345).toFixed(1)+' mo', (durationWeeks(resB.total)/4.345).toFixed(1)+' mo', (durationWeeks(resC.total)/4.345).toFixed(1)+' mo'],
+    ['Team size', peakFTE(resA.total,durationWeeks(resA.total))+' FTE', peakFTE(resB.total,durationWeeks(resB.total))+' FTE', peakFTE(resC.total,durationWeeks(resC.total))+' FTE'],
+    ['Complexity', qualitativeComplexity(resA.total), qualitativeComplexity(resB.total), qualitativeComplexity(resC.total)],
+    ['Risk (high-probability risks)', risks(scA).filter(r=>r.prob==='High').length, risks(scB).filter(r=>r.prob==='High').length, risks(scC).filter(r=>r.prob==='High').length],
+  ];
+  const el = document.getElementById('panel-scenarios');
+  el.innerHTML = `
+  <div class="panel-head"><h1>What-If / Scenario Analysis</h1></div>
+  <p class="panel-sub">Three deployment postures built on the same customer profile and module scope you've entered, varying customisation, integration and migration intensity.</p>
+  <div class="grid3" style="margin-bottom:22px">
+    <div class="card"><h3 style="font-size:13.5px">A: Standard Implementation</h3><p style="font-size:12.5px;color:var(--text-2);margin:6px 0 0">Minimal customisation, single migration cycle, low reporting complexity, core integrations only.</p></div>
+    <div class="card"><h3 style="font-size:13.5px">B: Enhanced Implementation</h3><p style="font-size:12.5px;color:var(--text-2);margin:6px 0 0">Current inputs as entered, plus additional reporting, integrations and workflow as scoped.</p></div>
+    <div class="card"><h3 style="font-size:13.5px">C: Complex Transformation</h3><p style="font-size:12.5px;color:var(--text-2);margin:6px 0 0">Elevated customisation, extra migration cycle, high reporting complexity, two additional integrations.</p></div>
+  </div>
+  <table class="scenario-table">
+    <thead><tr><th>Metric</th><th>Scenario A</th><th>Scenario B</th><th>Scenario C</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td class="metric">${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td><td class="num">${r[3]}</td></tr>`).join('')}</tbody>
+  </table>
+  <p class="footer-note">Scenarios are generated automatically from your current profile. They are a sensitivity check, not independent proposals.</p>
+  `;
+}
+
+/* ============================= VIDEOS & HOW-TO PANEL ============================= */
+const RESOURCE_LINKS = [
+  {group:"Official overview", items:[
+    {title:"Welcome to Business Central", desc:"Microsoft Learn overview of what Business Central is and how it fits together.", url:"https://learn.microsoft.com/en-us/dynamics365/business-central/welcome"},
+    {title:"Business Central documentation home", desc:"Full Microsoft Learn documentation set: setup, modules, admin and developer guidance.", url:"https://learn.microsoft.com/en-us/dynamics365/business-central/"},
+    {title:"Licensing in Business Central", desc:"The licensing model this estimator's cost figures are based on.", url:"https://learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/deployment/licensing"},
+  ]},
+  {group:"Videos and how-to walkthroughs", items:[
+    {title:"Business Central video library", desc:"Microsoft's own short how-to videos, organised by topic and task.", url:"https://learn.microsoft.com/en-us/dynamics365/business-central/across-videos"},
+    {title:"Official Business Central YouTube channel", desc:"Product walkthroughs, under-the-hood sessions and release update videos.", url:"https://www.youtube.com/@MicrosoftDynamics365BC"},
+    {title:"Getting started playlist", desc:"A guided video playlist for first-time users covering navigation and core setup.", url:"https://www.youtube.com/playlist?list=PL1FESh9FqyhST4suOdbJmA5ftQxmWzid4"},
+  ]},
+];
+function renderResources(){
+  const el = document.getElementById('panel-resources');
+  if(!el) return;
+  el.innerHTML = `
+  <div class="panel-head"><h1>Videos and How-To Resources</h1></div>
+  <p class="panel-sub">Official Microsoft Learn pages and videos for the prospect or delivery team to explore how Business Central works and how to use it, before or after go-live.</p>
+  ${RESOURCE_LINKS.map(g=>`
+    <div class="section-label">${g.group}</div>
+    <div class="grid2" style="margin-bottom:20px">
+      ${g.items.map(it=>`
+        <a href="${it.url}" target="_blank" rel="noopener" class="card" style="display:block;text-decoration:none;color:inherit">
+          <h3 style="font-size:14px;margin-bottom:4px;color:var(--brand)">${it.title}</h3>
+          <p style="font-size:12.5px;color:var(--text-2);margin:0 0 8px">${it.desc}</p>
+          <p class="mono" style="font-size:11px;color:var(--text-3);margin:0;word-break:break-all">${it.url}</p>
+        </a>`).join('')}
+    </div>`).join('')}
+  <p class="footer-note">Links point to Microsoft Learn and Microsoft's official Business Central channels. Content on those pages belongs to Microsoft and may change over time.</p>
+  `;
+}
+
+/* ============================= RECOMPUTE / INIT ============================= */
+function recomputeAndRender(){
+  const res = runEngine(state);
+  renderKpiBar(res);
+  renderLicensing(res);
+  renderDashboard(res);
+  renderTimeline(res);
+  renderTeam(res);
+  renderGovernance(res);
+  renderDiscovery(res);
+  renderExec(res);
+  renderScenarios();
+  renderResources();
+}
 
 function init(){
-  console.log('[BC Estimator] Initializing app...');
   renderNav();
   document.querySelectorAll('.panel').forEach(p=> p.classList.toggle('active', p.id==='panel-'+activePanel));
   renderInputs();
   recomputeAndRender();
-  console.log('[BC Estimator] App ready!');
 }
-
-// Include all the engine functions and rendering functions here
-// (Full code copy from the original estimator.html)
-// Due to space constraints, I'll create placeholder functions
-
-function renderNav() { console.log('[renderNav]'); }
-function renderInputs() { console.log('[renderInputs]'); }
-function recomputeAndRender() { console.log('[recomputeAndRender]'); }
-function runEngine(s) { return { ws: {}, total: 5000, base: 4000, contingency: 1000, monthlySupport: 80, annualSupport: 960 }; }
-function durationWeeks(h) { return Math.max(8, Math.min(64, Math.round(3 + h/225))); }
-function peakFTE(h, w) { return Math.max(2, Math.min(22, Math.round(h/(w*31)))); }
-let activePanel = "inputs";
-const switchPanel = (id) => {  activePanel = id; };
-
-// Document ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
+init();
 </script>
 
 </body></html>
