@@ -88,12 +88,12 @@ export default function Admin() {
     }
   };
 
-  const fetchUserDetails = async (contact) => {
+  const fetchUserDetails = async (sessionId, contact) => {
     setLoading(true);
     setError('');
 
     try {
-      const response = await fetch(`/api/activity?contact=${encodeURIComponent(contact)}`, {
+      const response = await fetch(`/api/activity?sessionId=${encodeURIComponent(sessionId)}`, {
         headers: {
           'Authorization': `Bearer ${adminKey}`,
           'Content-Type': 'application/json',
@@ -291,7 +291,7 @@ export default function Admin() {
                           <div className={styles.userName}>👤 {activity.contact}</div>
                           <button
                             className={styles.viewButton}
-                            onClick={() => fetchUserDetails(activity.contact)}
+                            onClick={() => fetchUserDetails(activity.sessionId, activity.contact)}
                           >
                             View Details →
                           </button>
@@ -305,6 +305,12 @@ export default function Admin() {
                             <span className={styles.statLabel}>Session ID</span>
                             <span className={styles.statValue} style={{ fontSize: '10px', fontFamily: 'monospace' }}>
                               {activity.sessionId.substring(0, 8)}...
+                            </span>
+                          </div>
+                          <div className={styles.stat}>
+                            <span className={styles.statLabel}>Browser / Device</span>
+                            <span className={styles.statValue} style={{ fontSize: '10px', fontFamily: 'monospace' }}>
+                              {activity.deviceId ? activity.deviceId.substring(0, 8) + '...' : 'unknown'}
                             </span>
                           </div>
                         </div>
@@ -331,6 +337,9 @@ export default function Admin() {
                 {userDetails && (
                   <div className={styles.detailsView}>
                     <h2>👤 {selectedUser} - Complete Activity</h2>
+                    <p style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
+                      Session {userDetails.sessionId} · Browser/device {userDetails.deviceId}
+                    </p>
 
                     <div className={styles.summaryCards}>
                       <div className={styles.summaryCard}>

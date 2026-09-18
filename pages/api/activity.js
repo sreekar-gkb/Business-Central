@@ -16,17 +16,21 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const { contact } = req.query;
+      // Sessions are keyed by (device_id, name), so the same name can
+      // legitimately exist more than once (two different people who both
+      // typed "John"). Admin lookups always use the session's own id, never
+      // the bare name, so they never conflate two different people.
+      const { sessionId } = req.query;
 
-      if (contact) {
+      if (sessionId) {
         const sessions = await sql`
-          SELECT id, session_token, name, started_at, last_activity_at
-          FROM sessions WHERE name = ${contact}
-          ORDER BY last_activity_at DESC LIMIT 1
+          SELECT id, device_id, name, started_at, last_activity_at
+          FROM sessions WHERE id = ${sessionId}
+          LIMIT 1
         `;
         const session = sessions[0];
         if (!session) {
-          return res.status(404).json({ error: 'No activity found for this contact' });
+          return res.status(404).json({ error: 'No activity found for this session' });
         }
 
         const events = await sql`
@@ -52,7 +56,8 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
           contact: session.name,
-          sessionId: session.session_token,
+          sessionId: session.id,
+          deviceId: session.device_id,
           startTime: session.started_at,
           sessionDurationMs: lastActivity - startTime,
           sessionDurationMins: Math.round((lastActivity - startTime) / 1000 / 60),
@@ -67,9 +72,11 @@ export default async function handler(req, res) {
         });
       }
 
-      // All sessions grouped, most recently active first
+      // All sessions, most recently active first. Each row is one
+      // (device, name) pair, so duplicate names from different browsers
+      // show up as separate cards rather than being merged.
       const sessions = await sql`
-        SELECT s.id, s.session_token, s.name, s.started_at, s.last_activity_at,
+        SELECT s.id, s.device_id, s.name, s.started_at, s.last_activity_at,
                COUNT(a.id) AS event_count
         FROM sessions s
         LEFT JOIN activity_logs a ON a.session_id = s.id
@@ -83,7 +90,8 @@ export default async function handler(req, res) {
         contacts: sessions.length,
         activities: sessions.map((s) => ({
           contact: s.name,
-          sessionId: s.session_token,
+          sessionId: s.id,
+          deviceId: s.device_id,
           activities: new Array(Number(s.event_count)).fill(null)
         }))
       });

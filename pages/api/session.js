@@ -1,12 +1,12 @@
-import { getSessionToken, findSessionByToken, resolveSession, touchSession } from '../../lib/session';
+import { getSessionId, findSessionById, resolveSession, touchSession } from '../../lib/session';
 
 export default async function handler(req, res) {
   res.setHeader('Content-Type', 'application/json');
 
   try {
     if (req.method === 'GET') {
-      const token = getSessionToken(req);
-      const session = await findSessionByToken(token);
+      const sessionId = getSessionId(req);
+      const session = await findSessionById(sessionId);
       if (!session) {
         return res.status(200).json({ found: false });
       }

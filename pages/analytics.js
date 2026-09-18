@@ -38,12 +38,12 @@ export default function Analytics() {
     }
   };
 
-  const viewDetails = async (contact) => {
+  const viewDetails = async (sessionId, contact) => {
     setLoading(true);
     setError('');
 
     try {
-      const response = await fetch(`/api/activity?contact=${encodeURIComponent(contact)}`, {
+      const response = await fetch(`/api/activity?sessionId=${encodeURIComponent(sessionId)}`, {
         headers: { 'Authorization': `Bearer ${adminKey}` },
       });
 
@@ -236,7 +236,7 @@ export default function Analytics() {
                   </div>
                   <button
                     className={styles.viewButton}
-                    onClick={() => viewDetails(activity.contact)}
+                    onClick={() => viewDetails(activity.sessionId, activity.contact)}
                   >
                     View Details →
                   </button>

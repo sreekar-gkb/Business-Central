@@ -1,8 +1,15 @@
 -- BC Deal Sizer persistent storage (Neon Postgres)
--- No authentication: sessions are identified by a browser-set session_token
--- cookie plus the display name the visitor enters. Estimate state and all
--- activity are tied to the session so work survives server restarts and
--- serverless cold starts (in-memory storage does not).
+-- No per-user accounts: everyone shares one password. Real identity comes
+-- from the pair (device_id, name) - device_id is a permanent random id set
+-- once per browser (bc_device cookie), name is what the person types in.
+-- This means:
+--   - same browser + same exact-case name  -> resumes that person's data
+--   - same browser + a different name      -> a fresh session, no leakage
+--   - a different browser + the same name  -> ALSO a fresh session, so two
+--     strangers who both type "John" never end up sharing one dashboard
+-- Estimate state and all activity are tied to the session row so work
+-- survives server restarts and serverless cold starts (in-memory storage
+-- does not).
 --
 -- Drops leftover tables from an earlier password-based auth prototype
 -- (users.passwordHash, old sessions/estimates/activity_logs shape) that
@@ -14,20 +21,16 @@ DROP TABLE IF EXISTS users CASCADE;
 
 CREATE TABLE IF NOT EXISTS sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_token VARCHAR(100) UNIQUE NOT NULL,
+  device_id VARCHAR(64) NOT NULL,
   name VARCHAR(200) NOT NULL DEFAULT 'Anonymous',
   ip_address VARCHAR(64),
   user_agent VARCHAR(500),
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (device_id, name)
 );
 
-CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
--- Login looks sessions up by exact, case-sensitive name ("John", "john"
--- and "joHn" are different identities) so returning under the same exact
--- name recovers that person's own saved data, even from a different
--- browser or after switching identities on this one.
 CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
 
 CREATE TABLE IF NOT EXISTS estimate_state (
