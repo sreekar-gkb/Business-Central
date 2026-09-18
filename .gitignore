@@ -35,3 +35,13 @@ yarn-error.log*
 .idea
 *.swp
 *.swo
+
+# Test results and logs
+/test-results
+/playwright-report
+server.log
+*.log
+
+# Temp files
+*.tmp
+*.bak
