@@ -8,7 +8,6 @@ declare global {
   namespace Express {
     interface Request {
       trackingId?: string;
-      userId?: string;
       sessionId?: string;
       startTime?: number;
     }
@@ -16,8 +15,67 @@ declare global {
 }
 
 /**
+ * Session Creator Middleware
+ * Creates or retrieves anonymous session (NO AUTH REQUIRED)
+ */
+export const sessionCreator = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    let sessionToken = req.cookies?.sessionId;
+
+    // If no existing session, create a new one
+    if (!sessionToken) {
+      sessionToken = `anon-${uuidv4()}`;
+
+      // Get device info
+      const parser = new UAParser(req.headers['user-agent']);
+      const browserInfo = parser.getResult();
+
+      // Create session in database
+      const query = `
+        INSERT INTO sessions (session_token, ip_address, user_agent, device_info)
+        VALUES ($1, $2, $3, $4)
+      `;
+
+      await pool.query(query, [
+        sessionToken,
+        getClientIP(req),
+        req.headers['user-agent'],
+        JSON.stringify(browserInfo),
+      ]);
+
+      // Set cookie to remember session
+      res.cookie('sessionId', sessionToken, {
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+      });
+    } else {
+      // Update last activity for existing session
+      await pool.query(
+        'UPDATE sessions SET last_activity_at = NOW() WHERE session_token = $1',
+        [sessionToken]
+      );
+    }
+
+    req.sessionId = sessionToken;
+    req.trackingId = uuidv4();
+    req.startTime = Date.now();
+
+    next();
+  } catch (error) {
+    console.error('Session creator error:', error);
+    next();
+  }
+};
+
+/**
  * Activity Tracking Middleware
- * Logs all user actions to the activity_logs table
+ * Logs all user actions anonymously
  */
 export const activityTracker = async (
   req: Request,
@@ -25,17 +83,6 @@ export const activityTracker = async (
   next: NextFunction
 ) => {
   try {
-    req.trackingId = uuidv4();
-    req.startTime = Date.now();
-
-    // Extract user info from auth token if present
-    const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
-      // Token validation would happen here - for now, we'll log it anyway
-      req.sessionId = token.split('.')[0]; // Simplified
-    }
-
     // Capture response to log later
     const originalSend = res.send;
     res.send = function (data) {
@@ -65,20 +112,31 @@ export const pageViewTracker = async (
   try {
     const { page_name, time_spent, scroll_depth } = req.body;
 
-    if (!req.userId || !page_name) {
+    if (!req.sessionId || !page_name) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Get session ID from database
+    const sessionResult = await pool.query(
+      'SELECT id FROM sessions WHERE session_token = $1',
+      [req.sessionId]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const sessionUUID = sessionResult.rows[0].id;
+
     const query = `
       INSERT INTO page_views (
-        user_id, session_id, page_name, entry_time,
+        session_id, page_name, entry_time,
         time_spent_seconds, scroll_depth
-      ) VALUES ($1, $2, $3, NOW(), $4, $5)
+      ) VALUES ($1, $2, NOW(), $3, $4)
     `;
 
     await pool.query(query, [
-      req.userId,
-      req.sessionId,
+      sessionUUID,
       page_name,
       time_spent || null,
       scroll_depth || null,
@@ -103,19 +161,31 @@ export const featureUsageTracker = async (
   try {
     const { feature_name } = req.body;
 
-    if (!req.userId || !feature_name) {
+    if (!req.sessionId || !feature_name) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Get session UUID
+    const sessionResult = await pool.query(
+      'SELECT id FROM sessions WHERE session_token = $1',
+      [req.sessionId]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const sessionUUID = sessionResult.rows[0].id;
+
     const query = `
-      INSERT INTO feature_usage (user_id, feature_name, last_used_at)
+      INSERT INTO feature_usage (session_id, feature_name, last_used_at)
       VALUES ($1, $2, NOW())
-      ON CONFLICT (user_id, feature_name)
+      ON CONFLICT (session_id, feature_name)
       DO UPDATE SET usage_count = usage_count + 1,
                     last_used_at = NOW()
     `;
 
-    await pool.query(query, [req.userId, feature_name]);
+    await pool.query(query, [sessionUUID, feature_name]);
 
     res.json({ success: true, tracking_id: req.trackingId });
   } catch (error) {
@@ -126,7 +196,7 @@ export const featureUsageTracker = async (
 
 /**
  * Error Tracking
- * Logs errors that occur on the client side
+ * Logs errors that occur (client-side or server-side)
  */
 export const errorTracker = async (
   req: Request,
@@ -143,15 +213,27 @@ export const errorTracker = async (
     const parser = new UAParser(req.headers['user-agent']);
     const browserInfo = parser.getResult();
 
+    // Get session UUID if available
+    let sessionUUID = null;
+    if (req.sessionId) {
+      const sessionResult = await pool.query(
+        'SELECT id FROM sessions WHERE session_token = $1',
+        [req.sessionId]
+      );
+      if (sessionResult.rows.length > 0) {
+        sessionUUID = sessionResult.rows[0].id;
+      }
+    }
+
     const query = `
       INSERT INTO error_logs (
-        user_id, error_type, error_message, error_stack,
+        session_id, error_type, error_message, error_stack,
         page_name, user_agent, ip_address, browser_info
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `;
 
     await pool.query(query, [
-      req.userId || null,
+      sessionUUID,
       error_type || 'UNKNOWN',
       error_message,
       error_stack || null,
@@ -181,41 +263,49 @@ async function logActivity(
   responseData?: any
 ) {
   try {
+    if (!req.sessionId) return;
+
     // Determine action type based on route and method
     const actionType = determineActionType(req);
 
     // Only log specific actions we care about
     const trackedActions = [
+      'view_page',
       'create_estimate',
       'update_estimate',
-      'view_estimate',
       'export_estimate',
-      'share_estimate',
-      'login',
-      'logout',
-      'update_field',
       'run_scenario',
       'delete_estimate',
+      'update_field',
     ];
 
     if (!trackedActions.includes(actionType)) {
       return; // Don't log every request
     }
 
+    // Get session UUID
+    const sessionResult = await pool.query(
+      'SELECT id FROM sessions WHERE session_token = $1',
+      [req.sessionId]
+    );
+
+    if (sessionResult.rows.length === 0) return;
+
+    const sessionUUID = sessionResult.rows[0].id;
+
     const query = `
       INSERT INTO activity_logs (
-        user_id, session_id, action_type, resource_type,
+        session_id, action_type, resource_type,
         resource_id, action_details, ip_address, user_agent,
         status, error_message
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `;
 
     const status = res.statusCode >= 400 ? 'error' : 'success';
     const resourceInfo = extractResourceInfo(req);
 
     await pool.query(query, [
-      req.userId || null,
-      req.sessionId || null,
+      sessionUUID,
       actionType,
       resourceInfo.type || null,
       resourceInfo.id || null,
@@ -237,14 +327,13 @@ function determineActionType(req: Request): string {
   const method = req.method;
   const path = req.path;
 
-  if (path === '/auth/login' && method === 'POST') return 'login';
-  if (path === '/auth/logout' && method === 'POST') return 'logout';
   if (path.includes('/estimates') && method === 'POST') return 'create_estimate';
   if (path.includes('/estimates') && method === 'PUT') return 'update_estimate';
   if (path.includes('/estimates') && method === 'GET') return 'view_estimate';
   if (path.includes('/export') && method === 'GET') return 'export_estimate';
   if (path.includes('/scenarios') && method === 'POST') return 'run_scenario';
   if (path.includes('/estimates') && method === 'DELETE') return 'delete_estimate';
+  if (path.includes('/tracking')) return 'tracking_event';
 
   return 'unknown_action';
 }
@@ -274,35 +363,8 @@ function extractResourceInfo(req: Request): { type?: string; id?: string } {
  */
 function getClientIP(req: Request): string {
   return (
-    req.headers['x-forwarded-for'] as string ||
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
     req.socket.remoteAddress ||
     'unknown'
   );
 }
-
-/**
- * Update session activity timestamp
- */
-export const updateSessionActivity = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    if (!req.sessionId) {
-      return next();
-    }
-
-    const query = `
-      UPDATE user_sessions
-      SET last_activity_at = NOW()
-      WHERE id = $1
-    `;
-
-    await pool.query(query, [req.sessionId]);
-    next();
-  } catch (error) {
-    console.error('Session update error:', error);
-    next();
-  }
-};

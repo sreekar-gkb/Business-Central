@@ -1,4 +1,4 @@
-// Activity tracking utility for client-side events
+// Anonymous session-based activity tracking utility (NO AUTHENTICATION REQUIRED)
 
 const API_BASE = process.env.REACT_APP_API_URL || '/api';
 
@@ -25,17 +25,15 @@ interface ErrorEvent {
 let pageStartTime = Date.now();
 let maxScrollDepth = 0;
 
-// Track page views
+/**
+ * Track page views (no auth required)
+ */
 export const trackPageView = async (event: PageViewEvent) => {
   try {
-    const token = localStorage.getItem('token');
-    if (!token) return;
-
     await fetch(`${API_BASE}/tracking/page-view`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({
         page_name: event.page_name,
@@ -48,17 +46,15 @@ export const trackPageView = async (event: PageViewEvent) => {
   }
 };
 
-// Track feature usage
+/**
+ * Track feature usage (no auth required)
+ */
 export const trackFeatureUsage = async (featureName: string) => {
   try {
-    const token = localStorage.getItem('token');
-    if (!token) return;
-
     await fetch(`${API_BASE}/tracking/feature-usage`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ feature_name: featureName }),
     });
@@ -67,17 +63,15 @@ export const trackFeatureUsage = async (featureName: string) => {
   }
 };
 
-// Track custom events
+/**
+ * Track custom events (no auth required)
+ */
 export const trackEvent = async (event: TrackingEvent) => {
   try {
-    const token = localStorage.getItem('token');
-    if (!token) return;
-
     await fetch(`${API_BASE}/tracking/event`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(event),
     });
@@ -86,7 +80,9 @@ export const trackEvent = async (event: TrackingEvent) => {
   }
 };
 
-// Track errors from client
+/**
+ * Track errors from client (no auth required)
+ */
 export const trackError = async (error: ErrorEvent) => {
   try {
     await fetch(`${API_BASE}/tracking/error`, {
@@ -106,7 +102,9 @@ export const trackError = async (error: ErrorEvent) => {
   }
 };
 
-// Initialize scroll tracking
+/**
+ * Initialize scroll tracking
+ */
 export const initScrollTracking = () => {
   window.addEventListener('scroll', () => {
     const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
@@ -117,8 +115,11 @@ export const initScrollTracking = () => {
   });
 };
 
-// Initialize error tracking
+/**
+ * Initialize error tracking (global error handlers)
+ */
 export const initErrorTracking = () => {
+  // Track runtime errors
   window.addEventListener('error', (event) => {
     trackError({
       error_type: 'RUNTIME_ERROR',
@@ -138,11 +139,71 @@ export const initErrorTracking = () => {
   });
 };
 
-// Get scroll depth before leaving page
+/**
+ * Get current scroll depth
+ */
 export const getScrollDepth = (): number => maxScrollDepth;
 
-// Reset on new page
+/**
+ * Reset metrics for new page
+ */
 export const resetPageMetrics = () => {
   pageStartTime = Date.now();
   maxScrollDepth = 0;
+};
+
+/**
+ * Track estimate action
+ */
+export const trackEstimateAction = (action: 'create' | 'update' | 'export' | 'delete', estimateId?: string) => {
+  trackEvent({
+    action_type: `${action}_estimate`,
+    resource_type: 'estimate',
+    resource_id: estimateId,
+  });
+};
+
+/**
+ * Track module selection
+ */
+export const trackModuleAction = (moduleId: string, selected: boolean) => {
+  trackEvent({
+    action_type: selected ? 'module_selected' : 'module_deselected',
+    resource_type: 'module',
+    resource_id: moduleId,
+  });
+};
+
+/**
+ * Track integration action
+ */
+export const trackIntegrationAction = (integrationId: string, action: 'add' | 'remove' | 'update') => {
+  trackEvent({
+    action_type: `integration_${action}`,
+    resource_type: 'integration',
+    resource_id: integrationId,
+  });
+};
+
+/**
+ * Track scenario run
+ */
+export const trackScenarioRun = (scenarioType: 'A' | 'B' | 'C') => {
+  trackEvent({
+    action_type: 'run_scenario',
+    resource_type: 'scenario',
+    resource_id: `scenario_${scenarioType}`,
+  });
+};
+
+/**
+ * Auto-track field changes (for estimator inputs)
+ */
+export const trackFieldChange = (fieldName: string, value: any) => {
+  trackEvent({
+    action_type: 'update_field',
+    resource_type: 'estimate_field',
+    resource_id: fieldName,
+    data: { value },
+  });
 };

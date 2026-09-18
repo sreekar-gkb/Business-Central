@@ -10,16 +10,80 @@
   padding-bottom: 1rem;
 }
 
+.admin-header {
+  position: relative;
+}
+
 .admin-header h1 {
   margin: 0 0 0.5rem 0;
   font-size: 2rem;
   color: #1a1a1a;
+  display: inline-block;
 }
 
 .admin-header .subtitle {
   margin: 0;
   color: #666;
   font-size: 0.9rem;
+}
+
+.btn-logout {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: #ef4444;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-logout:hover {
+  background: #dc2626;
+}
+
+.auth-form {
+  max-width: 400px;
+  margin: 4rem auto;
+  padding: 2rem;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.auth-form h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.3rem;
+  color: #1a1a1a;
+}
+
+.auth-form form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.auth-form input {
+  padding: 0.75rem 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.auth-form input:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+.auth-note {
+  margin: 1rem 0 0 0;
+  color: #666;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .stats-grid {

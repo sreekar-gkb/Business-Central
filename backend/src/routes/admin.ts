@@ -1,23 +1,33 @@
 import { Router, Request, Response } from 'express';
 import { pool } from '../database/connection';
-import { authenticateToken, authorizeAdmin } from '../middleware/auth';
 
 const router = Router();
+
+// Simple API key middleware (NO JWT REQUIRED)
+const checkAdminKey = (req: Request, res: Response, next: () => void) => {
+  const adminKey = req.headers['x-admin-key'];
+  const validKey = process.env.ADMIN_API_KEY || 'admin-key-12345';
+
+  if (adminKey !== validKey) {
+    return res.status(401).json({ error: 'Invalid admin key' });
+  }
+  next();
+};
 
 /**
  * GET /api/admin/dashboard
  * Get overall admin dashboard statistics
  */
-router.get('/admin/dashboard', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/dashboard', checkAdminKey, async (req: Request, res: Response) => {
   try {
     const stats = await pool.query(`
       SELECT
-        (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) as total_users,
-        (SELECT COUNT(*) FROM users WHERE role = 'admin' AND deleted_at IS NULL) as admin_count,
-        (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE is_active = TRUE) as active_users_now,
+        (SELECT COUNT(DISTINCT session_token) FROM sessions WHERE is_active = TRUE) as active_sessions_now,
+        (SELECT COUNT(DISTINCT session_token) FROM sessions) as total_sessions,
         (SELECT COUNT(*) FROM estimates WHERE deleted_at IS NULL) as total_estimates,
         (SELECT COUNT(*) FROM activity_logs WHERE timestamp > NOW() - INTERVAL '24 hours') as actions_last_24h,
-        (SELECT COUNT(*) FROM error_logs WHERE timestamp > NOW() - INTERVAL '24 hours') as errors_last_24h
+        (SELECT COUNT(*) FROM error_logs WHERE timestamp > NOW() - INTERVAL '24 hours') as errors_last_24h,
+        (SELECT COUNT(DISTINCT session_id) FROM activity_logs WHERE timestamp > NOW() - INTERVAL '24 hours') as active_sessions_24h
     `);
 
     res.json(stats.rows[0]);
@@ -31,31 +41,25 @@ router.get('/admin/dashboard', authenticateToken, authorizeAdmin, async (req: Re
  * GET /api/admin/activity-feed
  * Get paginated activity log with filtering
  */
-router.get('/admin/activity-feed', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/activity-feed', checkAdminKey, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = 50, user_id, action_type, date_from, date_to } = req.query;
+    const { page = 1, limit = 50, action_type, date_from, date_to } = req.query;
     const offset = ((Number(page) - 1) * Number(limit));
 
     let query = `
       SELECT
-        al.id, al.user_id, al.action_type, al.resource_type,
+        al.id, al.session_id, al.action_type, al.resource_type,
         al.resource_id, al.status, al.timestamp,
-        u.email, u.full_name,
-        al.action_details, al.ip_address
+        s.session_token, s.ip_address, s.started_at,
+        al.action_details, COUNT(*) OVER() as total_count
       FROM activity_logs al
-      LEFT JOIN users u ON al.user_id = u.id
+      LEFT JOIN sessions s ON al.session_id = s.id
       WHERE 1=1
     `;
     const params: any[] = [];
     let paramCount = 1;
 
     // Apply filters
-    if (user_id) {
-      query += ` AND al.user_id = $${paramCount}`;
-      params.push(user_id);
-      paramCount++;
-    }
-
     if (action_type) {
       query += ` AND al.action_type = $${paramCount}`;
       params.push(action_type);
@@ -80,37 +84,20 @@ router.get('/admin/activity-feed', authenticateToken, authorizeAdmin, async (req
 
     const result = await pool.query(query, params);
 
-    // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM activity_logs al WHERE 1=1';
-    const countParams: any[] = [];
-    let countParamCount = 1;
-
-    if (user_id) {
-      countQuery += ` AND al.user_id = $${countParamCount}`;
-      countParams.push(user_id);
-      countParamCount++;
-    }
-    if (action_type) {
-      countQuery += ` AND al.action_type = $${countParamCount}`;
-      countParams.push(action_type);
-      countParamCount++;
-    }
-    if (date_from) {
-      countQuery += ` AND al.timestamp >= $${countParamCount}`;
-      countParams.push(new Date(date_from as string));
-      countParamCount++;
-    }
-    if (date_to) {
-      countQuery += ` AND al.timestamp <= $${countParamCount}`;
-      countParams.push(new Date(date_to as string));
-      countParamCount++;
-    }
-
-    const countResult = await pool.query(countQuery, countParams);
-    const total = countResult.rows[0].total;
+    const total = result.rows.length > 0 ? result.rows[0].total_count : 0;
 
     res.json({
-      data: result.rows,
+      data: result.rows.map(row => ({
+        id: row.id,
+        session_token: row.session_token,
+        session_id: row.session_id,
+        action_type: row.action_type,
+        resource_type: row.resource_type,
+        status: row.status,
+        timestamp: row.timestamp,
+        ip_address: row.ip_address,
+        action_details: row.action_details,
+      })),
       pagination: {
         page: Number(page),
         limit: Number(limit),
@@ -125,144 +112,38 @@ router.get('/admin/activity-feed', authenticateToken, authorizeAdmin, async (req
 });
 
 /**
- * GET /api/admin/users/activity/:user_id
- * Get detailed activity for a specific user
+ * GET /api/admin/sessions
+ * Get all active sessions with statistics
  */
-router.get('/admin/users/activity/:user_id', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/sessions', checkAdminKey, async (req: Request, res: Response) => {
   try {
-    const { user_id } = req.params;
-    const { days = 30 } = req.query;
-
-    const userInfo = await pool.query(
-      'SELECT id, email, full_name, role, last_login_at, created_at FROM users WHERE id = $1',
-      [user_id]
-    );
-
-    if (userInfo.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Get activity timeline
-    const activities = await pool.query(`
-      SELECT
-        action_type, COUNT(*) as count,
-        MAX(timestamp) as last_occurrence
-      FROM activity_logs
-      WHERE user_id = $1
-        AND timestamp > NOW() - INTERVAL '${Number(days)} days'
-      GROUP BY action_type
-      ORDER BY last_occurrence DESC
-    `, [user_id]);
-
-    // Get page views
-    const pageViews = await pool.query(`
-      SELECT
-        page_name, COUNT(*) as visits,
-        SUM(time_spent_seconds) as total_time_seconds,
-        ROUND(AVG(time_spent_seconds)::numeric, 2) as avg_time_seconds
-      FROM page_views
-      WHERE user_id = $1
-        AND entry_time > NOW() - INTERVAL '${Number(days)} days'
-      GROUP BY page_name
-      ORDER BY visits DESC
-    `, [user_id]);
-
-    // Get feature usage
-    const features = await pool.query(`
-      SELECT feature_name, usage_count, last_used_at
-      FROM feature_usage
-      WHERE user_id = $1
-      ORDER BY usage_count DESC
-    `, [user_id]);
-
-    // Get sessions
-    const sessions = await pool.query(`
-      SELECT
-        id, login_at, logout_at, ip_address, device_info,
-        EXTRACT(EPOCH FROM (COALESCE(logout_at, NOW()) - login_at)) as duration_seconds
-      FROM user_sessions
-      WHERE user_id = $1
-        AND login_at > NOW() - INTERVAL '${Number(days)} days'
-      ORDER BY login_at DESC
-      LIMIT 20
-    `, [user_id]);
-
-    res.json({
-      user: userInfo.rows[0],
-      activity_summary: {
-        total_actions: activities.rows.reduce((sum, row) => sum + row.count, 0),
-        action_breakdown: activities.rows,
-      },
-      page_views: pageViews.rows,
-      feature_usage: features.rows,
-      recent_sessions: sessions.rows,
-    });
-  } catch (error) {
-    console.error('User activity error:', error);
-    res.status(500).json({ error: 'Failed to fetch user activity' });
-  }
-});
-
-/**
- * GET /api/admin/users
- * Get all users with activity summary
- */
-router.get('/admin/users', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
-  try {
-    const { page = 1, limit = 50, status, role } = req.query;
+    const { page = 1, limit = 50 } = req.query;
     const offset = ((Number(page) - 1) * Number(limit));
 
-    let query = `
+    const result = await pool.query(`
       SELECT
-        u.id, u.email, u.full_name, u.role, u.status, u.created_at,
-        u.last_login_at,
+        s.id,
+        s.session_token,
+        s.ip_address,
+        s.started_at,
+        s.last_activity_at,
+        s.is_active,
         COUNT(DISTINCT al.id) as total_actions,
-        COUNT(DISTINCT us.id) as total_sessions,
-        COUNT(DISTINCT CASE WHEN us.is_active = TRUE THEN us.id END) as active_sessions,
-        COUNT(DISTINCT pv.id) as page_views
-      FROM users u
-      LEFT JOIN activity_logs al ON u.id = al.user_id
-      LEFT JOIN user_sessions us ON u.id = us.user_id
-      LEFT JOIN page_views pv ON u.id = pv.user_id
-      WHERE u.deleted_at IS NULL
-    `;
-    const params: any[] = [];
-    let paramCount = 1;
-
-    if (status) {
-      query += ` AND u.status = $${paramCount}`;
-      params.push(status);
-      paramCount++;
-    }
-
-    if (role) {
-      query += ` AND u.role = $${paramCount}`;
-      params.push(role);
-      paramCount++;
-    }
-
-    query += ` GROUP BY u.id ORDER BY u.last_login_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
-    params.push(Number(limit), offset);
-
-    const result = await pool.query(query, params);
+        COUNT(DISTINCT pv.id) as page_views,
+        COUNT(DISTINCT CASE WHEN al.action_type = 'create_estimate' THEN al.id END) as estimates_created,
+        COUNT(DISTINCT CASE WHEN al.action_type = 'export_estimate' THEN al.id END) as exports,
+        COUNT(DISTINCT CASE WHEN al.status = 'error' THEN al.id END) as errors
+      FROM sessions s
+      LEFT JOIN activity_logs al ON s.id = al.session_id
+      LEFT JOIN page_views pv ON s.id = pv.session_id
+      WHERE s.is_active = TRUE
+      GROUP BY s.id, s.session_token, s.ip_address, s.started_at, s.last_activity_at, s.is_active
+      ORDER BY s.last_activity_at DESC
+      LIMIT $1 OFFSET $2
+    `, [Number(limit), offset]);
 
     // Get total count
-    let countQuery = 'SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL';
-    const countParams: any[] = [];
-    let countParamCount = 1;
-
-    if (status) {
-      countQuery += ` AND status = $${countParamCount}`;
-      countParams.push(status);
-      countParamCount++;
-    }
-    if (role) {
-      countQuery += ` AND role = $${countParamCount}`;
-      countParams.push(role);
-      countParamCount++;
-    }
-
-    const countResult = await pool.query(countQuery, countParams);
+    const countResult = await pool.query('SELECT COUNT(*) as total FROM sessions WHERE is_active = TRUE');
 
     res.json({
       data: result.rows,
@@ -274,8 +155,89 @@ router.get('/admin/users', authenticateToken, authorizeAdmin, async (req: Reques
       },
     });
   } catch (error) {
-    console.error('Users list error:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    console.error('Sessions list error:', error);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+/**
+ * GET /api/admin/sessions/:session_id/details
+ * Get detailed activity for a specific session
+ */
+router.get('/sessions/:session_id/details', checkAdminKey, async (req: Request, res: Response) => {
+  try {
+    const { session_id } = req.params;
+    const { days = 30 } = req.query;
+
+    // Get session info
+    const sessionResult = await pool.query(
+      `SELECT id, session_token, ip_address, started_at, last_activity_at, is_active
+       FROM sessions WHERE session_token = $1`,
+      [session_id]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const session = sessionResult.rows[0];
+
+    // Get activity timeline
+    const activities = await pool.query(`
+      SELECT
+        action_type, COUNT(*) as count,
+        MAX(timestamp) as last_occurrence
+      FROM activity_logs
+      WHERE session_id = $1
+        AND timestamp > NOW() - INTERVAL '${Number(days)} days'
+      GROUP BY action_type
+      ORDER BY last_occurrence DESC
+    `, [session.id]);
+
+    // Get page views
+    const pageViews = await pool.query(`
+      SELECT
+        page_name, COUNT(*) as visits,
+        SUM(time_spent_seconds) as total_time_seconds,
+        ROUND(AVG(time_spent_seconds)::numeric, 2) as avg_time_seconds
+      FROM page_views
+      WHERE session_id = $1
+        AND entry_time > NOW() - INTERVAL '${Number(days)} days'
+      GROUP BY page_name
+      ORDER BY visits DESC
+    `, [session.id]);
+
+    // Get feature usage
+    const features = await pool.query(`
+      SELECT feature_name, usage_count, last_used_at
+      FROM feature_usage
+      WHERE session_id = $1
+      ORDER BY usage_count DESC
+    `, [session.id]);
+
+    // Get recent actions
+    const recentActions = await pool.query(`
+      SELECT
+        action_type, resource_type, status, timestamp, action_details
+      FROM activity_logs
+      WHERE session_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 50
+    `, [session.id]);
+
+    res.json({
+      session,
+      activity_summary: {
+        total_actions: activities.rows.reduce((sum, row) => sum + row.count, 0),
+        action_breakdown: activities.rows,
+      },
+      page_views: pageViews.rows,
+      feature_usage: features.rows,
+      recent_actions: recentActions.rows,
+    });
+  } catch (error) {
+    console.error('Session activity error:', error);
+    res.status(500).json({ error: 'Failed to fetch session activity' });
   }
 });
 
@@ -283,15 +245,15 @@ router.get('/admin/users', authenticateToken, authorizeAdmin, async (req: Reques
  * GET /api/admin/analytics/estimates
  * Get estimate creation analytics
  */
-router.get('/admin/analytics/estimates', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/analytics/estimates', checkAdminKey, async (req: Request, res: Response) => {
   try {
-    const { period = '30' } = req.query; // days
+    const { period = '30' } = req.query;
 
     const result = await pool.query(`
       SELECT
         DATE_TRUNC('day', created_at)::date as date,
         COUNT(*) as estimates_created,
-        COUNT(DISTINCT user_id) as unique_users,
+        COUNT(DISTINCT session_id) as unique_sessions,
         COUNT(CASE WHEN status = 'submitted' THEN 1 END) as submitted,
         COUNT(CASE WHEN status = 'draft' THEN 1 END) as drafts
       FROM estimates
@@ -312,7 +274,7 @@ router.get('/admin/analytics/estimates', authenticateToken, authorizeAdmin, asyn
  * GET /api/admin/analytics/errors
  * Get error statistics
  */
-router.get('/admin/analytics/errors', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/analytics/errors', checkAdminKey, async (req: Request, res: Response) => {
   try {
     const { days = 30 } = req.query;
 
@@ -320,7 +282,7 @@ router.get('/admin/analytics/errors', authenticateToken, authorizeAdmin, async (
       SELECT
         error_type,
         COUNT(*) as count,
-        COUNT(DISTINCT user_id) as affected_users,
+        COUNT(DISTINCT session_id) as affected_sessions,
         MAX(timestamp) as last_error
       FROM error_logs
       WHERE timestamp > NOW() - INTERVAL '${Number(days)} days'
@@ -333,7 +295,7 @@ router.get('/admin/analytics/errors', authenticateToken, authorizeAdmin, async (
       SELECT
         DATE_TRUNC('day', timestamp)::date as date,
         COUNT(*) as errors,
-        COUNT(DISTINCT user_id) as affected_users
+        COUNT(DISTINCT session_id) as affected_sessions
       FROM error_logs
       WHERE timestamp > NOW() - INTERVAL '${Number(days)} days'
       GROUP BY DATE_TRUNC('day', timestamp)
@@ -351,41 +313,10 @@ router.get('/admin/analytics/errors', authenticateToken, authorizeAdmin, async (
 });
 
 /**
- * POST /api/admin/users/:user_id/toggle-status
- * Activate/deactivate a user
- */
-router.post('/admin/users/:user_id/toggle-status', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
-  try {
-    const { user_id } = req.params;
-
-    const result = await pool.query(
-      `UPDATE users
-       SET status = CASE WHEN status = 'active' THEN 'inactive' ELSE 'active' END,
-           updated_at = NOW()
-       WHERE id = $1
-       RETURNING id, email, status`,
-      [user_id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
-      message: 'User status updated',
-      user: result.rows[0],
-    });
-  } catch (error) {
-    console.error('Toggle user status error:', error);
-    res.status(500).json({ error: 'Failed to update user status' });
-  }
-});
-
-/**
  * POST /api/admin/error-logs/:error_id/resolve
  * Mark an error as resolved
  */
-router.post('/admin/error-logs/:error_id/resolve', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.post('/error-logs/:error_id/resolve', checkAdminKey, async (req: Request, res: Response) => {
   try {
     const { error_id } = req.params;
 
@@ -412,26 +343,27 @@ router.post('/admin/error-logs/:error_id/resolve', authenticateToken, authorizeA
 });
 
 /**
- * GET /api/admin/analytics/heatmap
- * Get feature usage heatmap data
+ * GET /api/admin/analytics/features
+ * Get feature usage analytics
  */
-router.get('/admin/analytics/heatmap', authenticateToken, authorizeAdmin, async (req: Request, res: Response) => {
+router.get('/analytics/features', checkAdminKey, async (req: Request, res: Response) => {
   try {
     const result = await pool.query(`
       SELECT
         feature_name,
-        usage_count,
-        COUNT(DISTINCT user_id) as unique_users,
-        MAX(last_used_at) as last_used
+        COUNT(DISTINCT session_id) as sessions_using,
+        SUM(usage_count) as total_uses,
+        MAX(last_used_at) as last_used,
+        ROUND(AVG(usage_count)::numeric, 2) as avg_uses_per_session
       FROM feature_usage
       GROUP BY feature_name
-      ORDER BY usage_count DESC
+      ORDER BY total_uses DESC
     `);
 
     res.json(result.rows);
   } catch (error) {
-    console.error('Heatmap analytics error:', error);
-    res.status(500).json({ error: 'Failed to fetch heatmap data' });
+    console.error('Feature analytics error:', error);
+    res.status(500).json({ error: 'Failed to fetch feature analytics' });
   }
 });
 

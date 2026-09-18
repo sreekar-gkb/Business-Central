@@ -2,19 +2,17 @@ import React, { useState, useEffect } from 'react';
 import './AdminDashboard.css';
 
 interface DashboardStats {
-  total_users: number;
-  admin_count: number;
-  active_users_now: number;
+  active_sessions_now: number;
+  total_sessions: number;
   total_estimates: number;
   actions_last_24h: number;
   errors_last_24h: number;
+  active_sessions_24h: number;
 }
 
 interface ActivityLog {
   id: string;
-  user_id: string;
-  email: string;
-  full_name: string;
+  session_token: string;
   action_type: string;
   resource_type: string;
   status: 'success' | 'error';
@@ -22,47 +20,68 @@ interface ActivityLog {
   ip_address: string;
 }
 
-interface User {
+interface Session {
   id: string;
-  email: string;
-  full_name: string;
-  role: 'admin' | 'user' | 'viewer';
-  status: 'active' | 'inactive';
-  last_login_at: string;
+  session_token: string;
+  ip_address: string;
+  started_at: string;
+  last_activity_at: string;
+  is_active: boolean;
   total_actions: number;
-  total_sessions: number;
-  active_sessions: number;
   page_views: number;
+  estimates_created: number;
+  exports: number;
+  errors: number;
 }
 
 export const AdminDashboard: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityLog[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'overview' | 'activity' | 'users' | 'errors'>('overview');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeTab, setActiveTab] = useState<'overview' | 'activity' | 'sessions' | 'errors'>('overview');
   const [loading, setLoading] = useState(true);
+  const [adminKey, setAdminKey] = useState(localStorage.getItem('adminKey') || '');
+  const [isAuthorized, setIsAuthorized] = useState(!!adminKey);
   const [filters, setFilters] = useState({
     actionType: '',
-    userId: '',
     page: 1,
     limit: 50,
   });
 
+  const handleAdminKeySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    localStorage.setItem('adminKey', adminKey);
+    setIsAuthorized(true);
+    fetchAllData();
+  };
+
   useEffect(() => {
+    if (isAuthorized) {
+      fetchAllData();
+    }
+  }, [isAuthorized]);
+
+  const getHeaders = () => ({
+    'x-admin-key': adminKey || localStorage.getItem('adminKey') || '',
+  });
+
+  const fetchAllData = () => {
     fetchDashboardStats();
     fetchActivityFeed();
-    fetchUsers();
-  }, []);
+    fetchSessions();
+  };
 
   const fetchDashboardStats = async () => {
     try {
       const response = await fetch('/api/admin/dashboard', {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        headers: getHeaders(),
       });
+      if (!response.ok) throw new Error('Unauthorized');
       const data = await response.json();
       setStats(data);
     } catch (error) {
       console.error('Failed to fetch stats:', error);
+      setIsAuthorized(false);
     }
   };
 
@@ -73,60 +92,78 @@ export const AdminDashboard: React.FC = () => {
         page: String(filters.page),
         limit: String(filters.limit),
         ...(filters.actionType && { action_type: filters.actionType }),
-        ...(filters.userId && { user_id: filters.userId }),
       });
 
       const response = await fetch(`/api/admin/activity-feed?${params}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        headers: getHeaders(),
       });
+      if (!response.ok) throw new Error('Unauthorized');
       const data = await response.json();
       setActivityFeed(data.data);
     } catch (error) {
       console.error('Failed to fetch activity feed:', error);
+      setIsAuthorized(false);
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchUsers = async () => {
+  const fetchSessions = async () => {
     try {
-      const response = await fetch('/api/admin/users?limit=100', {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+      const response = await fetch('/api/admin/sessions?limit=100', {
+        headers: getHeaders(),
       });
+      if (!response.ok) throw new Error('Unauthorized');
       const data = await response.json();
-      setUsers(data.data);
+      setSessions(data.data);
     } catch (error) {
-      console.error('Failed to fetch users:', error);
+      console.error('Failed to fetch sessions:', error);
+      setIsAuthorized(false);
     }
   };
 
-  const toggleUserStatus = async (userId: string) => {
-    try {
-      const response = await fetch(`/api/admin/users/${userId}/toggle-status`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      });
-      if (response.ok) {
-        fetchUsers();
-      }
-    } catch (error) {
-      console.error('Failed to toggle user status:', error);
-    }
-  };
+  if (!isAuthorized) {
+    return (
+      <div className="admin-dashboard">
+        <header className="admin-header">
+          <h1>Admin Dashboard</h1>
+          <p className="subtitle">Activity Monitoring & Analytics</p>
+        </header>
+        <div className="auth-form">
+          <form onSubmit={handleAdminKeySubmit}>
+            <h2>Enter Admin Key</h2>
+            <input
+              type="password"
+              placeholder="Enter admin API key"
+              value={adminKey}
+              onChange={e => setAdminKey(e.target.value)}
+              required
+            />
+            <button type="submit" className="btn-primary">Access Dashboard</button>
+            <p className="auth-note">Default: admin-key-12345</p>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="admin-dashboard">
       <header className="admin-header">
         <h1>Admin Dashboard</h1>
-        <p className="subtitle">User Activity & System Monitoring</p>
+        <p className="subtitle">Anonymous Session Activity & System Monitoring</p>
+        <button className="btn-logout" onClick={() => {
+          localStorage.removeItem('adminKey');
+          setIsAuthorized(false);
+        }}>Logout</button>
       </header>
 
       {/* Stats Grid */}
       {stats && (
         <div className="stats-grid">
-          <StatCard label="Total Users" value={stats.total_users} />
-          <StatCard label="Admin Users" value={stats.admin_count} />
-          <StatCard label="Active Now" value={stats.active_users_now} color="success" />
+          <StatCard label="Active Sessions (Now)" value={stats.active_sessions_now} color="success" />
+          <StatCard label="Total Sessions" value={stats.total_sessions} />
+          <StatCard label="Active (24h)" value={stats.active_sessions_24h} color="success" />
           <StatCard label="Total Estimates" value={stats.total_estimates} />
           <StatCard label="Actions (24h)" value={stats.actions_last_24h} />
           <StatCard label="Errors (24h)" value={stats.errors_last_24h} color="warning" />
@@ -135,7 +172,7 @@ export const AdminDashboard: React.FC = () => {
 
       {/* Tabs */}
       <div className="tabs">
-        {(['overview', 'activity', 'users', 'errors'] as const).map(tab => (
+        {(['overview', 'activity', 'sessions', 'errors'] as const).map(tab => (
           <button
             key={tab}
             className={`tab-button ${activeTab === tab ? 'active' : ''}`}
@@ -167,9 +204,9 @@ export const AdminDashboard: React.FC = () => {
             <table className="activity-table">
               <thead>
                 <tr>
-                  <th>User</th>
+                  <th>Session</th>
                   <th>Action</th>
-                  <th>Resource</th>
+                  <th>Resource Type</th>
                   <th>Status</th>
                   <th>IP Address</th>
                   <th>Timestamp</th>
@@ -178,11 +215,7 @@ export const AdminDashboard: React.FC = () => {
               <tbody>
                 {activityFeed.map(log => (
                   <tr key={log.id}>
-                    <td>
-                      <strong>{log.full_name}</strong>
-                      <br />
-                      <small>{log.email}</small>
-                    </td>
+                    <td className="mono small">{log.session_token.slice(0, 12)}...</td>
                     <td>{log.action_type}</td>
                     <td>{log.resource_type || '-'}</td>
                     <td>
@@ -200,48 +233,35 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Users Tab */}
-      {activeTab === 'users' && (
+      {/* Sessions Tab */}
+      {activeTab === 'sessions' && (
         <div className="tab-content">
           <table className="users-table">
             <thead>
               <tr>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Last Login</th>
+                <th>Session ID</th>
+                <th>IP Address</th>
+                <th>Started</th>
+                <th>Last Activity</th>
                 <th>Actions</th>
-                <th>Sessions</th>
-                <th>Page Views</th>
-                <th>Controls</th>
+                <th>Pages Viewed</th>
+                <th>Estimates Created</th>
+                <th>Exports</th>
+                <th>Errors</th>
               </tr>
             </thead>
             <tbody>
-              {users.map(user => (
-                <tr key={user.id}>
-                  <td className="mono small">{user.email}</td>
-                  <td>{user.full_name}</td>
-                  <td>{user.role}</td>
-                  <td>
-                    <span className={`status-badge ${user.status}`}>
-                      {user.status}
-                    </span>
-                  </td>
-                  <td className="small">
-                    {user.last_login_at ? new Date(user.last_login_at).toLocaleDateString() : 'Never'}
-                  </td>
-                  <td className="mono">{user.total_actions}</td>
-                  <td className="mono">{user.active_sessions}/{user.total_sessions}</td>
-                  <td className="mono">{user.page_views}</td>
-                  <td>
-                    <button
-                      className={`btn-toggle ${user.status === 'active' ? 'deactivate' : 'activate'}`}
-                      onClick={() => toggleUserStatus(user.id)}
-                    >
-                      {user.status === 'active' ? 'Deactivate' : 'Activate'}
-                    </button>
-                  </td>
+              {sessions.map(session => (
+                <tr key={session.id}>
+                  <td className="mono small">{session.session_token.slice(0, 16)}...</td>
+                  <td className="mono small">{session.ip_address}</td>
+                  <td className="small">{new Date(session.started_at).toLocaleDateString()}</td>
+                  <td className="small">{new Date(session.last_activity_at).toLocaleString()}</td>
+                  <td className="mono">{session.total_actions}</td>
+                  <td className="mono">{session.page_views}</td>
+                  <td className="mono">{session.estimates_created}</td>
+                  <td className="mono">{session.exports}</td>
+                  <td className="mono">{session.errors}</td>
                 </tr>
               ))}
             </tbody>
@@ -262,9 +282,9 @@ export const AdminDashboard: React.FC = () => {
                 </span>
               </div>
               <div className="metric">
-                <span className="metric-label">User Engagement</span>
+                <span className="metric-label">Session Engagement</span>
                 <span className="metric-value">
-                  {stats ? ((stats.active_users_now / stats.total_users) * 100).toFixed(0) : 0}% active
+                  {stats ? ((stats.active_sessions_24h / stats.total_sessions) * 100).toFixed(0) : 0}% active (24h)
                 </span>
               </div>
             </div>
@@ -272,9 +292,9 @@ export const AdminDashboard: React.FC = () => {
 
           <div className="overview-section">
             <h3>Quick Actions</h3>
-            <button className="action-button">Export Activity Log</button>
-            <button className="action-button">Generate Report</button>
-            <button className="action-button">View Error Details</button>
+            <button className="action-button" onClick={() => window.location.reload()}>Refresh Data</button>
+            <button className="action-button" onClick={() => setActiveTab('activity')}>View Activity Feed</button>
+            <button className="action-button" onClick={() => setActiveTab('sessions')}>View All Sessions</button>
           </div>
         </div>
       )}
