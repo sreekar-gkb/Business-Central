@@ -24,10 +24,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
--- Login looks sessions up by name (case-insensitive) so returning to a
--- previously used name always finds that person's own saved data again,
--- even from a different browser or after switching identities.
-CREATE INDEX IF NOT EXISTS idx_sessions_name_lower ON sessions(LOWER(name));
+-- Login looks sessions up by exact, case-sensitive name ("John", "john"
+-- and "joHn" are different identities) so returning under the same exact
+-- name recovers that person's own saved data, even from a different
+-- browser or after switching identities on this one.
+CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
 
 CREATE TABLE IF NOT EXISTS estimate_state (
   session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
