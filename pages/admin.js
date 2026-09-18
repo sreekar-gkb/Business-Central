@@ -249,9 +249,6 @@ export default function Admin() {
                   >
                     🔄 Refresh
                   </button>
-                  <a href="/analytics" className={`${styles.button} ${styles.analyticsLink}`}>
-                    📊 Advanced Analytics
-                  </a>
                   <button
                     className={styles.button}
                     onClick={exportCSV}

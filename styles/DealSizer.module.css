@@ -602,6 +602,309 @@
   border-top: 1px solid var(--border);
 }
 
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.statTile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 16px 14px;
+  box-shadow: var(--shadow);
+}
+
+.statTile .l {
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.statTile .v {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.statTile .v small {
+  font-size: 13px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.statTile.accent {
+  background: linear-gradient(135deg, var(--brand-wash), var(--surface));
+  border-color: var(--brand-wash-strong);
+}
+
+.statTile.accent .v {
+  color: var(--brand);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.pill.good { background: var(--good-wash); color: var(--good); }
+.pill.warning { background: var(--warning-wash); color: var(--warning); }
+.pill.critical { background: var(--critical-wash); color: var(--critical); }
+.pill.dot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 920px) {
+  .grid2, .grid3, .qaCol {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chartCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px 12px;
+  box-shadow: var(--shadow);
+  margin-bottom: 18px;
+}
+
+.chartCard h3 {
+  font-size: 13.5px;
+  margin-bottom: 2px;
+}
+
+.chartCard .cap {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-bottom: 10px;
+}
+
+.chartWrap {
+  position: relative;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.tlRow {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.tlLabel {
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.tlLabel .wk {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.tlTrack {
+  position: relative;
+  height: 22px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.tlBar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 5px;
+  background: var(--series-1, #2a78d6);
+}
+
+.tlBar.parallel {
+  background: var(--series-3, #1baf7a);
+}
+
+.tlAxis {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.tlAxis .ax {
+  font-size: 10.5px;
+  color: var(--text-3);
+  display: flex;
+  justify-content: space-between;
+}
+
+.qaCol {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+
+.qaCard {
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+}
+
+.qaCard.crit {
+  background: var(--critical-wash);
+  border-color: color-mix(in srgb, var(--critical) 35%, transparent);
+}
+
+.qaCard.imp {
+  background: var(--warning-wash);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.qaCard.nice {
+  background: var(--surface-2);
+}
+
+.qaCard h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+
+.qaCard ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+}
+
+.qaCard li {
+  margin-bottom: 7px;
+}
+
+.execBlock {
+  margin-bottom: 18px;
+}
+
+.execBlock h3 {
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.execBlock p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+  max-width: 760px;
+}
+
+.commercialGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  margin: 16px 0;
+}
+
+.cgItem .l {
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cgItem .v {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.scenarioTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.scenarioTable th, .scenarioTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.scenarioTable th {
+  font-family: var(--font-display);
+  font-size: 13px;
+}
+
+.scenarioTable td.metric {
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.scenarioTable td.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.resourceCard {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.resourceCard h3 {
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: var(--brand);
+}
+
+.resourceCard p {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin: 0 0 8px;
+}
+
+.resourceCard .url {
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 0;
+  word-break: break-all;
+}
+
 @media (max-width: 860px) {
   .app {
     flex-direction: column;

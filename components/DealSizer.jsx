@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   INDUSTRIES,
   CHALLENGES,
@@ -22,7 +22,9 @@ import {
   CUSTOMER_RESPONSIBILITIES,
   EXCLUSIONS_BASE,
   PHASE_ALLOC,
-  PHASES as PHASES_DATA
+  PHASES as PHASES_DATA,
+  BC_LICENSES,
+  RESOURCE_LINKS
 } from '../lib/constants';
 import {
   runEngine,
@@ -40,7 +42,13 @@ import {
   companiesFactor,
   industryFactor,
   modulesByWs,
-  moduleHours
+  moduleHours,
+  needsPremium,
+  licensingEngine,
+  assumptions,
+  risks,
+  discoveryQuestions,
+  recommendationText
 } from '../lib/calculator';
 import styles from '../styles/DealSizer.module.css';
 
@@ -476,13 +484,15 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
             toggleSupportScope={toggleSupportScope}
           />
         )}
+        {activePanel === "licensing" && <LicensingPanel state={state} />}
         {activePanel === "dashboard" && <DashboardPanel res={res} state={state} />}
         {activePanel === "timeline" && <TimelinePanel weeks={weeks} />}
         {activePanel === "team" && <TeamPanel res={res} weeks={weeks} />}
         {activePanel === "governance" && <GovernancePanel state={state} />}
         {activePanel === "discovery" && <DiscoveryPanel state={state} />}
-        {activePanel === "exec" && <ExecutivePanel res={res} state={state} weeks={weeks} team={team} />}
+        {activePanel === "exec" && <ExecutivePanel res={res} state={state} weeks={weeks} team={team} conf={conf} />}
         {activePanel === "scenarios" && <ScenariosPanel state={state} />}
+        {activePanel === "resources" && <ResourcesPanel />}
       </main>
     </div>
   );
@@ -491,13 +501,15 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
 function Sidebar({ activePanel, onPanelChange }) {
   const items = [
     ["inputs", "Inputs"],
+    ["licensing", "Licensing & Costs"],
     ["dashboard", "Dashboard"],
     ["timeline", "Timeline"],
     ["team", "Team"],
     ["governance", "Governance"],
     ["discovery", "Discovery Qs"],
     ["exec", "Executive Summary"],
-    ["scenarios", "Scenarios"]
+    ["scenarios", "Scenarios"],
+    ["resources", "Videos & How-To"]
   ];
 
   return (
@@ -1345,26 +1357,322 @@ function InputsPanel({
   );
 }
 
-// Dashboard, Timeline, Team, Governance, Discovery, Executive, Scenarios panels
+// ============================= CHART HELPERS =============================
+const CHART_COLORS = {
+  series1: '#2a78d6', series2: '#eb6834', series3: '#1baf7a', series4: '#eda100',
+  series5: '#e87ba4', series6: '#008300', series7: '#4a3aa7', series8: '#e34948',
+  good: '#0ca30c', warning: '#fab219', critical: '#d03b3b',
+  ink2: '#52514e', grid: '#e1e0d9', axis: '#c3c2b7'
+};
+
+function useChart(canvasRef, buildConfig, deps) {
+  const chartRef = useRef(null);
+  useEffect(() => {
+    let cancelled = false;
+    import('chart.js/auto').then(({ default: Chart }) => {
+      if (cancelled || !canvasRef.current) return;
+      if (chartRef.current) chartRef.current.destroy();
+      chartRef.current = new Chart(canvasRef.current.getContext('2d'), buildConfig());
+    });
+    return () => {
+      cancelled = true;
+      if (chartRef.current) {
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
+function HBarChart({ labels, data, color, unit }) {
+  const canvasRef = useRef(null);
+  useChart(canvasRef, () => ({
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: color, borderRadius: 4, barThickness: 16, maxBarThickness: 18 }] },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` ${fmtH(c.parsed.x)} ${unit}` } } },
+      scales: {
+        x: { beginAtZero: true, grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.ink2 } },
+        y: { grid: { display: false }, ticks: { color: CHART_COLORS.ink2 } }
+      }
+    }
+  }), [JSON.stringify(labels), JSON.stringify(data)]);
+  return <canvas ref={canvasRef}></canvas>;
+}
+
+function VBarChart({ labels, data, colors, unit }) {
+  const canvasRef = useRef(null);
+  useChart(canvasRef, () => ({
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderRadius: 5, maxBarThickness: 64 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` ${fmtH(c.parsed.y)} ${unit}` } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: CHART_COLORS.ink2 } },
+        y: { beginAtZero: true, grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.ink2 } }
+      }
+    }
+  }), [JSON.stringify(labels), JSON.stringify(data)]);
+  return <canvas ref={canvasRef}></canvas>;
+}
+
+function DonutChart({ labels, data, colors }) {
+  const canvasRef = useRef(null);
+  useChart(canvasRef, () => ({
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: '#fff', borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { color: CHART_COLORS.ink2, boxWidth: 10, padding: 14 } },
+        tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtH(c.parsed)} h` } }
+      }
+    }
+  }), [JSON.stringify(labels), JSON.stringify(data)]);
+  return <canvas ref={canvasRef}></canvas>;
+}
+
+function TableToggle({ headers, rows }) {
+  return (
+    <details style={{ marginTop: '8px' }}>
+      <summary style={{ cursor: 'pointer', fontSize: '11.5px', color: 'var(--brand)', fontWeight: 600, listStyle: 'none' }}>
+        Show data table
+      </summary>
+      <table className={styles.ctable}>
+        <thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
+      </table>
+    </details>
+  );
+}
+
+// ============================= LICENSING PANEL =============================
+function LicensingPanel({ state }) {
+  const lic = licensingEngine(state);
+  const rows = [
+    [lic.fullLicense.name, lic.fullUsers, lic.fullLicense.monthly, lic.fullCostMonthly],
+    [lic.teamLicense.name, lic.teamMembers, lic.teamLicense.monthly, lic.teamCostMonthly]
+  ];
+  if (lic.extBeyondFree > 0) rows.push([`${lic.fullLicense.name} (external accountant beyond free allowance)`, lic.extBeyondFree, lic.fullLicense.monthly, lic.extCostMonthly]);
+
+  return (
+    <section className={styles.panel}>
+      <div className={styles.panelHead}>
+        <h1>Microsoft Licensing and Costs</h1>
+      </div>
+      <p className={styles.panelSub}>
+        Estimated Business Central license mix and recurring cost for the current user count and module scope, based on the Microsoft Dynamics 365 Business Central licensing model.
+      </p>
+      <div className={styles.exampleBanner}>
+        <b>Source</b>
+        <span>
+          License types and rules are from Microsoft Learn, Licensing in Business Central (learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/deployment/licensing) and the published Dynamics 365 Licensing Guide. Prices shown are Microsoft US list price per user per month, billed annually. This is a planning estimate, not a quote. Confirm local CSP or partner pricing and currency before quoting the customer.
+        </span>
+      </div>
+
+      <div className={styles.statRow}>
+        <div className={`${styles.statTile} ${styles.accent}`}><div className="l">Recommended tier</div><div className="v">{lic.premium ? 'Premium' : 'Essentials'}</div></div>
+        <div className={styles.statTile}><div className="l">Full users</div><div className="v">{lic.fullUsers}</div></div>
+        <div className={styles.statTile}><div className="l">Team members</div><div className="v">{lic.teamMembers}</div></div>
+        <div className={styles.statTile}><div className="l">Est. monthly cost</div><div className={`v ${styles.mono}`}>${lic.totalMonthly.toLocaleString('en-AU')}</div></div>
+        <div className={`${styles.statTile} ${styles.accent}`}><div className="l">Est. annual cost</div><div className={`v ${styles.mono}`}>${lic.totalAnnual.toLocaleString('en-AU')}</div></div>
+      </div>
+
+      <div className={styles.card}>
+        <h3>Recommended license mix</h3>
+        <table className={styles.ctable}>
+          <thead><tr><th>License</th><th>Users</th><th>List price / month</th><th>Monthly total</th></tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td className={styles.rowlabel}>{r[0]}</td>
+                <td>{r[1]}</td>
+                <td className={styles.mono}>${r[2]}</td>
+                <td className={styles.mono}>${r[3].toLocaleString('en-AU')}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td className={styles.rowlabel}>Total</td>
+              <td>{lic.fullUsers + lic.teamMembers + lic.extBeyondFree}</td>
+              <td></td>
+              <td className={styles.mono} style={{ fontWeight: 600 }}>${lic.totalMonthly.toLocaleString('en-AU')}</td>
+            </tr>
+          </tfoot>
+        </table>
+        <p style={{ color: 'var(--text-2)', fontSize: '12.5px', marginTop: '10px' }}>
+          {lic.premium
+            ? 'One or more selected modules require Premium (manufacturing or service management), so every full user is priced at the Premium rate.'
+            : 'No manufacturing or service management modules are currently selected, so full users are priced at the Essentials rate.'}
+          {lic.extAccountants > 0 && ` Up to 3 External Accountant licenses are free per tenant. Currently allowing for ${lic.extAccountants} free external accountant seat${lic.extAccountants === 1 ? '' : 's'}.`}
+        </p>
+      </div>
+
+      <div className={styles.card}>
+        <h3>All Business Central license types</h3>
+        <table className={styles.ctable}>
+          <thead><tr><th>License type</th><th>List price / month</th><th>What it covers</th></tr></thead>
+          <tbody>
+            {BC_LICENSES.map((l) => (
+              <tr key={l.id}>
+                <td className={styles.rowlabel}>{l.name}</td>
+                <td className={styles.mono}>{l.monthly === 0 ? 'Free (conditions apply)' : `$${l.monthly}`}</td>
+                <td>{l.desc}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className={styles.footerNote}>
+        License figures are indicative and cover Business Central subscription cost only. They exclude implementation, customization, data migration, integration build, training and support, which are estimated separately on the Dashboard and Executive Summary tabs.
+      </p>
+    </section>
+  );
+}
+
+// ============================= DASHBOARD PANEL =============================
 function DashboardPanel({ res, state }) {
+  const weeks = durationWeeks(res.total);
+  const months = (weeks / 4.345).toFixed(1);
+  const team = peakFTE(res.total, weeks);
+  const conf = confidenceScore(state);
+  const low = runEngine(bestCaseState(state)).total;
+  const high = runEngine(worstCaseState(state)).total;
+
+  const wsEntries = WS_ORDER.map((k) => [WS_LABELS[k], res.ws[k]]).filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]);
+  const roleEntries = effortByRole(res.ws);
+
+  const phaseHours = {};
+  PHASES.forEach((p) => { phaseHours[p[0]] = 0; });
+  WS_ORDER.forEach((k) => {
+    if (k === 'pm') return;
+    const target = PHASE_ALLOC[k];
+    if (target != null) phaseHours[target] = (phaseHours[target] || 0) + res.ws[k];
+  });
+  const pmSplit = res.ws.pm / 4;
+  ['mobilization', 'discovery', 'design', 'config'].forEach((p) => { phaseHours[p] = (phaseHours[p] || 0) + pmSplit; });
+  const phaseEntries = PHASES.map((p) => [p[1], phaseHours[p[0]] || 0]).filter(([, v]) => v > 0.5);
+
+  const implHours = res.total - res.ws.migration;
+  const mixLabels = ['Implementation (one-off h)', 'Migration (one-off h)', 'Support (h / year)'];
+  const mixData = [Math.round(implHours), Math.round(res.ws.migration), Math.round(res.annualSupport)];
+
+  const rk = risks(state);
+  const counts = { Low: 0, Medium: 0, High: 0 };
+  rk.forEach((r) => { counts[r.prob] = (counts[r.prob] || 0) + 1; });
+
   return (
     <section className={styles.panel}>
       <div className={styles.panelHead}>
         <h1>Delivery & Estimate Dashboard</h1>
       </div>
       <p className={styles.panelSub}>
-        Indicative Pre-Sales Estimate — Subject to Discovery & Validation. All figures are benchmark-based and traceable to the inputs on the Inputs tab.
+        Indicative Pre-Sales Estimate. Subject to Discovery and Validation. All figures are benchmark-based and traceable to the inputs on the Inputs tab.
       </p>
-      {/* Placeholder for dashboard content - would include charts */}
-      <div className={styles.card}>
-        <h3>Dashboard Content</h3>
-        <p>Expected effort: {fmtH(res.total)} h</p>
-        <p>Contingency: {res.contPct}%</p>
-        <p>Total with contingency: {fmtH(res.total)} h</p>
+
+      <div className={styles.statRow}>
+        <div className={`${styles.statTile} ${styles.accent}`}><div className="l">Expected effort</div><div className="v">{fmtH(res.total)}<small> h</small></div></div>
+        <div className={styles.statTile}><div className="l">Effort range</div><div className="v" style={{ fontSize: '17px' }}>{fmtH(low)}–{fmtH(high)}<small> h</small></div></div>
+        <div className={styles.statTile}><div className="l">Duration</div><div className="v">{months}<small> mo</small></div></div>
+        <div className={styles.statTile}><div className="l">Team (peak)</div><div className="v">{team}<small> FTE</small></div></div>
+        <div className={styles.statTile}><div className="l">Monthly support</div><div className="v">{fmtH(res.monthlySupport)}<small> h/mo</small></div></div>
+        <div className={styles.statTile}><div className="l">Complexity</div><div className="v" style={{ fontSize: '17px' }}>{state.complexity.overall}</div></div>
+        <div className={styles.statTile}>
+          <div className="l">Estimate confidence</div>
+          <div className="v" style={{ fontSize: '17px' }}>
+            <span className={`${styles.pill} ${styles.dot} ${conf.level === 'High' ? styles.good : conf.level === 'Medium' ? styles.warning : styles.critical}`}>{conf.level}</span>
+          </div>
+        </div>
       </div>
+
+      <div className={styles.card}>
+        <h3>Implementation Effort Range</h3>
+        <div style={{ display: 'flex', gap: '26px', flexWrap: 'wrap', fontFamily: 'var(--font-mono)' }}>
+          <div><div style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase' }}>Low</div><div style={{ fontSize: '19px', fontWeight: 600 }}>{fmtH(low)} h</div></div>
+          <div><div style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase' }}>Expected</div><div style={{ fontSize: '19px', fontWeight: 600, color: 'var(--brand)' }}>{fmtH(res.total)} h</div></div>
+          <div><div style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase' }}>High</div><div style={{ fontSize: '19px', fontWeight: 600 }}>{fmtH(high)} h</div></div>
+        </div>
+        <p style={{ color: 'var(--text-3)', fontSize: '11.5px', marginTop: '10px' }}>
+          Low = best case (excellent data quality, one fewer migration cycle, complexity stepped down one band, high customer availability). High = conservative case (poor data quality, one extra migration cycle, complexity stepped up one band, low availability).
+        </p>
+      </div>
+
+      <div className={styles.grid2}>
+        <div className={styles.chartCard}>
+          <h3>Effort by Workstream</h3><div className="cap">Base hours, before contingency</div>
+          <div className={styles.chartWrap} style={{ height: Math.max(260, wsEntries.length * 22) + 'px' }}>
+            <HBarChart labels={wsEntries.map((e) => e[0])} data={wsEntries.map((e) => Math.round(e[1]))} color={CHART_COLORS.series1} unit="h" />
+          </div>
+          <TableToggle headers={['Workstream', 'Hours']} rows={wsEntries.map(([l, v]) => [l, fmtH(v)])} />
+        </div>
+        <div className={styles.chartCard}>
+          <h3>Effort by Role</h3><div className="cap">Base hours allocated across delivery roles</div>
+          <div className={styles.chartWrap} style={{ height: Math.max(260, roleEntries.length * 24) + 'px' }}>
+            <HBarChart labels={roleEntries.map((e) => e[0])} data={roleEntries.map((e) => Math.round(e[1]))} color={CHART_COLORS.series7} unit="h" />
+          </div>
+          <TableToggle headers={['Role', 'Hours']} rows={roleEntries.map(([l, v]) => [l, fmtH(v)])} />
+        </div>
+      </div>
+      <div className={styles.grid2}>
+        <div className={styles.chartCard}>
+          <h3>Effort by Phase</h3><div className="cap">Functional & technical hours mapped to delivery phase</div>
+          <div className={styles.chartWrap} style={{ height: '260px' }}>
+            <VBarChart labels={phaseEntries.map((e) => e[0])} data={phaseEntries.map((e) => Math.round(e[1]))} colors={CHART_COLORS.series3} unit="h" />
+          </div>
+          <TableToggle headers={['Phase', 'Hours']} rows={phaseEntries.map(([l, v]) => [l, fmtH(v)])} />
+        </div>
+        <div className={styles.chartCard}>
+          <h3>Implementation vs Migration vs Support</h3><div className="cap">Different units: implementation & migration are one-off hours, support is hours/year</div>
+          <div className={styles.chartWrap} style={{ height: '260px' }}>
+            <DonutChart labels={mixLabels} data={mixData} colors={[CHART_COLORS.series1, CHART_COLORS.series2, CHART_COLORS.series3]} />
+          </div>
+          <TableToggle headers={['Category', 'Hours']} rows={mixLabels.map((l, i) => [l, fmtH(mixData[i])])} />
+        </div>
+      </div>
+      <div className={styles.chartCard} style={{ maxWidth: '560px' }}>
+        <h3>Risk Distribution</h3><div className="cap">Count of register risks by current probability rating</div>
+        <div className={styles.chartWrap} style={{ height: '220px' }}>
+          <VBarChart labels={['Low', 'Medium', 'High']} data={[counts.Low, counts.Medium, counts.High]} colors={[CHART_COLORS.good, CHART_COLORS.warning, CHART_COLORS.critical]} unit="risks" />
+        </div>
+        <TableToggle headers={['Probability', 'Count of risks']} rows={[['Low', counts.Low], ['Medium', counts.Medium], ['High', counts.High]]} />
+      </div>
+
+      <details className={styles.acc}>
+        <summary className={styles.accSummary}><span className={styles.badgeNum}>i</span>Methodology & traceability<span className={styles.chevron}>›</span></summary>
+        <div className={styles.accBody}>
+          <div style={{ background: 'var(--surface-2)', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius)', padding: '14px 16px', fontSize: '12.5px', color: 'var(--text-2)', marginTop: '6px' }}>
+            Every workstream is calculated as <code>Base Effort × Scope Factor × Complexity Factor × Data/Integration Factor × Deployment Factor</code>.
+            Base effort comes from selected modules, migration data categories, integration rows and customisation counts (estimation benchmarks, not official Microsoft figures).
+            Complexity factors: Low ×0.82, Medium ×1.00, High ×1.32, Very High ×1.68. Contingency ({res.contPct}% here) is layered on top of the summed workstreams, never hidden inside them.
+          </div>
+        </div>
+      </details>
     </section>
   );
 }
+
+// ============================= TIMELINE PANEL =============================
+const PHASE_META = {
+  mobilization: { dep: "Contract signature", roles: "PM", deliverable: "Kick-off, environment provisioning, project charter" },
+  discovery: { dep: "Mobilisation", roles: "SA, PM, Functional Consultants", deliverable: "Current-state review, fit-gap" },
+  design: { dep: "Discovery sign-off", roles: "SA, Functional Consultants", deliverable: "Solution Design Document" },
+  config: { dep: "Design sign-off", roles: "Functional Consultants", deliverable: "Configured environment" },
+  dev: { dep: "Design sign-off (parallel to Configuration)", roles: "AL Developer, Technical Architect", deliverable: "Extensions & customisations built" },
+  migration: { dep: "Design sign-off (parallel to Configuration)", roles: "Data Migration Consultant", deliverable: "Mapped, cleansed, staged data" },
+  intdev: { dep: "Design sign-off (parallel to Configuration)", roles: "Integration Developer", deliverable: "Integrations built & unit tested" },
+  testing: { dep: "Configuration, Development, Migration", roles: "Tester, Functional Consultants", deliverable: "System & integration test results" },
+  uat: { dep: "Testing complete", roles: "Customer SMEs, PM", deliverable: "UAT sign-off" },
+  training: { dep: "UAT (parallel to Cutover Prep)", roles: "Trainer", deliverable: "Trained end users" },
+  cutover: { dep: "UAT sign-off", roles: "PM, Data Migration Consultant", deliverable: "Cutover runbook rehearsed" },
+  golive: { dep: "Cutover Preparation", roles: "Full delivery team", deliverable: "Live in production" },
+  hypercare: { dep: "Go-Live", roles: "Support Consultant, Functional Consultants", deliverable: "Stabilised operation" },
+  transition: { dep: "Hypercare", roles: "Support Consultant, PM", deliverable: "Handover to support model" }
+};
 
 function TimelinePanel({ weeks }) {
   const plan = timelinePlan(weeks);
@@ -1374,28 +1682,41 @@ function TimelinePanel({ weeks }) {
         <h1>Delivery Timeline</h1>
       </div>
       <p className={styles.panelSub}>
-        Indicative phase plan over {weeks} weeks (~{(weeks / 4.345).toFixed(1)} months).
+        Indicative phase plan over {weeks} weeks (~{(weeks / 4.345).toFixed(1)} months). Bars in <span style={{ color: CHART_COLORS.series3, fontWeight: 600 }}>green</span> run in parallel with the phase above rather than adding sequentially.
       </p>
       <div className={styles.card}>
-        <table className={styles.regTable}>
-          <thead>
-            <tr>
-              <th>Phase</th>
-              <th>Duration</th>
-              <th>Week Range</th>
-            </tr>
-          </thead>
-          <tbody>
-            {plan.map((p) => (
-              <tr key={p.key}>
-                <td><strong>{p.label}</strong></td>
-                <td>{p.dur} wk</td>
-                <td>{p.start}–{p.end}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className={styles.timeline}>
+          {plan.map((p) => (
+            <div key={p.key} className={styles.tlRow}>
+              <div className={styles.tlLabel}>{p.label}<span className={styles.wk}>wk {p.start}–{p.end}</span></div>
+              <div className={styles.tlTrack}>
+                <div
+                  className={`${styles.tlBar} ${p.parallel ? styles.parallel : ''}`}
+                  style={{ left: `${(p.start / weeks * 100).toFixed(1)}%`, width: `${Math.max(2, (p.dur / weeks * 100)).toFixed(1)}%` }}
+                ></div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className={styles.tlAxis}>
+          <div></div>
+          <div className={styles.ax}><span>Week 0</span><span>Week {Math.round(weeks / 2)}</span><span>Week {weeks}</span></div>
+        </div>
       </div>
+      <table className={styles.regTable} style={{ marginTop: '20px' }}>
+        <thead><tr><th>Phase</th><th>Duration</th><th>Dependencies</th><th>Primary roles</th><th>Key deliverable</th></tr></thead>
+        <tbody>
+          {plan.map((p) => (
+            <tr key={p.key}>
+              <td><strong>{p.label}</strong></td>
+              <td className={styles.mono}>{p.dur} wk</td>
+              <td>{PHASE_META[p.key]?.dep}</td>
+              <td>{PHASE_META[p.key]?.roles}</td>
+              <td>{PHASE_META[p.key]?.deliverable}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </section>
   );
 }
@@ -1439,15 +1760,37 @@ function TeamPanel({ res, weeks }) {
 }
 
 function GovernancePanel({ state }) {
+  const asmp = assumptions(state);
+  const rk = risks(state);
+  const probClass = (p) => (p === 'High' ? styles.critical : p === 'Medium' ? styles.warning : styles.good);
+
   return (
     <section className={styles.panel}>
       <div className={styles.panelHead}>
         <h1>Assumptions, Exclusions & Risks</h1>
       </div>
       <p className={styles.panelSub}>
-        Everything below is explicit and generated from the current inputs.
+        Everything below is explicit and generated from the current inputs. Nothing is buried in narrative text.
       </p>
-      <h3>Exclusions</h3>
+
+      <h3 style={{ fontSize: '14px', margin: '4px 0 10px' }}>Assumptions register</h3>
+      <div className={styles.card}>
+        <table className={styles.regTable}>
+          <thead><tr><th style={{ width: '50px' }}>ID</th><th>Assumption</th><th>Impact if incorrect</th><th>Estimate impact</th></tr></thead>
+          <tbody>
+            {asmp.map(([id, a, imp, est]) => (
+              <tr key={id}>
+                <td className={styles.mono}>{id}</td>
+                <td>{a}</td>
+                <td>{imp}</td>
+                <td className={styles.mono}>{est}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style={{ fontSize: '14px', margin: '20px 0 10px' }}>Exclusions</h3>
       <div className={styles.card}>
         <ul>
           {EXCLUSIONS_BASE.map((ex, i) => (
@@ -1455,31 +1798,79 @@ function GovernancePanel({ state }) {
           ))}
         </ul>
       </div>
+
+      <h3 style={{ fontSize: '14px', margin: '20px 0 10px' }}>Risk register</h3>
+      <div className={styles.card}>
+        <table className={styles.regTable}>
+          <thead><tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            {rk.map((r, i) => (
+              <tr key={i}>
+                <td>{r.t}</td>
+                <td><span className={`${styles.pill} ${probClass(r.prob)}`}>{r.prob}</span></td>
+                <td><span className={`${styles.pill} ${probClass(r.impact)}`}>{r.impact}</span></td>
+                <td>{r.mit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
 
 function DiscoveryPanel({ state }) {
+  const q = discoveryQuestions(state);
   return (
     <section className={styles.panel}>
       <div className={styles.panelHead}>
         <h1>Discovery Questions</h1>
       </div>
       <p className={styles.panelSub}>
-        Generated from the current inputs and prioritised by commercial impact.
+        Generated from the current inputs and prioritised by commercial impact. Answering the Critical items first is most likely to move the estimate.
       </p>
-      <div className={styles.card}>
-        <h3>Key questions to validate the estimate</h3>
-        <p>Review the inputs above and refine as you gather more information from the prospect.</p>
+      <div className={styles.qaCol}>
+        <div className={`${styles.qaCard} ${styles.crit}`}>
+          <h4>Critical</h4>
+          <ul>{q.crit.length ? q.crit.map((x, i) => <li key={i}>{x}</li>) : <li>None outstanding for the current inputs.</li>}</ul>
+        </div>
+        <div className={`${styles.qaCard} ${styles.imp}`}>
+          <h4>Important</h4>
+          <ul>{q.imp.map((x, i) => <li key={i}>{x}</li>)}</ul>
+        </div>
+        <div className={`${styles.qaCard} ${styles.nice}`}>
+          <h4>Nice to have</h4>
+          <ul>{q.nice.map((x, i) => <li key={i}>{x}</li>)}</ul>
+        </div>
       </div>
     </section>
   );
 }
 
-function ExecutivePanel({ res, state, weeks, team }) {
+function ExecutivePanel({ res, state, weeks, team, conf }) {
   const c = state.customer;
   const low = runEngine(bestCaseState(state)).total;
   const high = runEngine(worstCaseState(state)).total;
+  const months = (weeks / 4.345).toFixed(1);
+  const drivers = WS_ORDER.filter((k) => !['pm', 'documentation', 'discovery'].includes(k))
+    .map((k) => [WS_LABELS[k], res.ws[k]])
+    .sort((a, b) => b[1] - a[1]).slice(0, 6).map((d) => d[0]);
+  const modLabels = [...state.modules].map((id) => MODULES.find((m) => m.id === id)?.label).filter(Boolean);
+  const asmp = assumptions(state);
+  const rk = risks(state);
+  const confChecks = [
+    ["Concurrent users known", c.concurrentUsers > 0],
+    ["Company count known", c.companies > 0],
+    ["Module selection made", state.modules.size > 0],
+    ["Migration data quality known", state.migration.dataQuality !== 'Unknown'],
+    ["Migration scope defined", state.migration.scope.size > 0],
+    ["Integration scope defined", state.integrations.length > 0 || !state.challenges.has('integration_problems')],
+    ["Customisation scope indicated", true],
+    ["Localisation confirmed", !!state.localization.country],
+    ["Target go-live known", !!c.targetDate],
+    ["Customer availability known", state.delivery.availability !== 'Unknown'],
+    ["Support ticket volume estimated", !!state.support.ticketVolume]
+  ];
 
   return (
     <section className={styles.panel}>
@@ -1487,62 +1878,105 @@ function ExecutivePanel({ res, state, weeks, team }) {
         <h1>Executive Summary</h1>
       </div>
       <p className={styles.panelSub}>
-        Indicative Pre-Sales Estimate — Subject to Discovery & Validation.
+        Indicative Pre-Sales Estimate. Subject to Discovery and Validation.
       </p>
+
+      <div className={styles.execBlock}><h3>What is being implemented</h3><p>A Microsoft Dynamics 365 Business Central implementation for {c.name || 'the prospect'}, covering {modLabels.length} modules across {c.companies} compan{c.companies === 1 ? 'y' : 'ies'} and {c.users} users, delivered as a {state.delivery.model.toLowerCase()}.</p></div>
+      <div className={styles.execBlock}><h3>Why the solution is required</h3><p>{[...state.challenges].map((id) => CHALLENGES.find((x) => x[0] === id)?.[1]).filter(Boolean).join(', ') || 'To be confirmed with the prospect during Discovery.'}</p></div>
+      <div className={styles.execBlock}><h3>Business Central scope</h3><p>{modLabels.slice(0, 14).join(', ')}{modLabels.length > 14 ? `, and ${modLabels.length - 14} more` : ''}.</p></div>
+      <div className={styles.execBlock}><h3>Migration scope</h3><p>Source: {state.migration.source}. Data categories: {[...state.migration.scope].map((id) => MIGRATION_SCOPE.find((m) => m[0] === id)?.[1]).filter(Boolean).join(', ') || 'to be confirmed'}. Complexity: {state.migration.complexity}, data quality: {state.migration.dataQuality}, {state.migration.cycles} migration cycle(s).</p></div>
+      <div className={styles.execBlock}><h3>Integration scope</h3><p>{state.integrations.length ? state.integrations.map((r) => `${r.name} (${r.category}, ${r.direction}, ${r.complexity})`).join('; ') : 'No integrations currently in scope.'}</p></div>
+      <div className={styles.execBlock}><h3>Delivery approach</h3><p>{recommendationText(state, res)}</p></div>
+      <div className={styles.execBlock}><h3>Indicative timeline & effort</h3><p>~{months} months ({weeks} weeks), {fmtH(res.total)} hours expected (range {fmtH(low)}–{fmtH(high)} h), delivered by a peak team of {team} FTE.</p></div>
+      <div className={styles.execBlock}><h3>Major assumptions</h3><p>{asmp.slice(0, 4).map((a) => a[1]).join(' ')}</p></div>
+      <div className={styles.execBlock}><h3>Major risks</h3><p>{rk.filter((r) => r.prob === 'High').map((r) => r.t).join(' ') || 'No high-probability risks flagged against the current inputs.'}</p></div>
+      <div className={styles.execBlock}><h3>Support approach</h3><p>{state.support.model} coverage at {state.support.sla} SLA, {fmtH(res.monthlySupport)} hours/month indicative ({fmtH(res.annualSupport)} h/year), following a structured hypercare handover.</p></div>
+
+      <h3 style={{ fontSize: '15px', margin: '26px 0 4px' }}>Commercial Summary</h3>
       <div className={styles.card}>
-        <h3>Commercial Summary</h3>
-        <table className={styles.regTable}>
-          <tbody>
-            <tr>
-              <td><strong>Customer</strong></td>
-              <td>{c.name || '—'}</td>
-            </tr>
-            <tr>
-              <td><strong>Industry</strong></td>
-              <td>{c.industry}</td>
-            </tr>
-            <tr>
-              <td><strong>Users</strong></td>
-              <td>{c.users}</td>
-            </tr>
-            <tr>
-              <td><strong>Companies</strong></td>
-              <td>{c.companies}</td>
-            </tr>
-            <tr>
-              <td><strong>Modules</strong></td>
-              <td>{state.modules.size} selected</td>
-            </tr>
-            <tr>
-              <td><strong>Estimated Duration</strong></td>
-              <td>{(weeks / 4.345).toFixed(1)} months</td>
-            </tr>
-            <tr>
-              <td><strong>Indicative Effort</strong></td>
-              <td>{fmtH(low)} / {fmtH(res.total)} / {fmtH(high)} h</td>
-            </tr>
-            <tr>
-              <td><strong>Recommended Team</strong></td>
-              <td>{team} people (peak)</td>
-            </tr>
-            <tr>
-              <td><strong>Support Estimate</strong></td>
-              <td>{fmtH(res.monthlySupport)} h/month</td>
-            </tr>
-          </tbody>
-        </table>
+        <div className={styles.commercialGrid}>
+          <div className={styles.cgItem}><div className="l">Customer</div><div className="v">{c.name || 'Not specified'}</div></div>
+          <div className={styles.cgItem}><div className="l">Industry</div><div className="v">{c.industry}</div></div>
+          <div className={styles.cgItem}><div className="l">Users</div><div className="v">{c.users}</div></div>
+          <div className={styles.cgItem}><div className="l">Companies</div><div className="v">{c.companies}</div></div>
+          <div className={styles.cgItem}><div className="l">Modules</div><div className="v">{modLabels.length} selected</div></div>
+          <div className={styles.cgItem}><div className="l">Implementation complexity</div><div className="v">{state.complexity.overall}</div></div>
+          <div className={styles.cgItem}><div className="l">Migration complexity</div><div className="v">{state.migration.complexity}</div></div>
+          <div className={styles.cgItem}><div className="l">Integration complexity</div><div className="v">{state.complexity.areas.integrations}</div></div>
+          <div className={styles.cgItem}><div className="l">Estimated duration</div><div className="v">{months} months</div></div>
+          <div className={styles.cgItem}><div className="l">Indicative effort</div><div className={`v ${styles.mono}`}>{fmtH(low)} / {fmtH(res.total)} / {fmtH(high)} h</div></div>
+          <div className={styles.cgItem}><div className="l">Recommended team</div><div className="v">{team} people (peak)</div></div>
+          <div className={styles.cgItem}><div className="l">Support estimate</div><div className="v">{fmtH(res.monthlySupport)} h/month</div></div>
+          <div className={styles.cgItem}><div className="l">Estimate confidence</div><div className="v">{conf.level}</div></div>
+        </div>
+        <div className={styles.sectionLabel}>Primary effort drivers</div>
+        <div className={styles.chipGroup}>{drivers.map((d) => <span key={d} className={styles.chip} style={{ cursor: 'default' }}>{d}</span>)}</div>
+      </div>
+
+      <h3 style={{ fontSize: '15px', margin: '26px 0 4px' }}>Estimate Confidence: {conf.level} ({conf.known}/{conf.total} known)</h3>
+      <div className={styles.card}>
+        <div className={styles.chipGroup}>
+          {confChecks.map(([label, ok]) => (
+            <span key={label} className={`${styles.pill} ${styles.dot} ${ok ? styles.good : styles.warning}`}>{label}</span>
+          ))}
+        </div>
+        <p style={{ color: 'var(--text-2)', fontSize: '12.5px', marginTop: '12px' }}>
+          {conf.level === 'High' ? 'Most major cost drivers are known, so this estimate can support a scoped proposal with limited caveats.' :
+            conf.level === 'Medium' ? 'Several major variables remain unconfirmed, so treat this as directional and prioritise the Critical discovery questions before quoting firmly.' :
+              'Significant discovery is still required, so this estimate should be positioned internally only, not shared as a firm figure.'}
+        </p>
       </div>
       <p className={styles.footerNote}>
-        Generated by BC Deal Sizer for Raven Labs / GKB Labs pre-sales use. Figures are estimation benchmarks, not official Microsoft guidance.
+        Generated by BC Deal Sizer for Raven Labs / GKB Labs pre-sales use. Figures are estimation benchmarks, not official Microsoft guidance, and are not a binding quote.
       </p>
     </section>
   );
 }
 
+function scenarioVariant(state, tier) {
+  const v = cloneState(state);
+  if (tier === 'A') {
+    v.customization.level = 'Minimal customization';
+    v.migration.cycles = 1;
+    v.reporting.complexity = 'Low';
+    v.integrations = state.integrations.slice(0, 1);
+    Object.keys(v.complexity.areas).forEach((k) => {
+      if (v.complexity.areas[k] === 'High' || v.complexity.areas[k] === 'Very High') v.complexity.areas[k] = 'Medium';
+    });
+  } else if (tier === 'B') {
+    if (v.customization.level === 'No customization') v.customization.level = 'Moderate customization';
+  } else if (tier === 'C') {
+    const order = Object.keys(CUSTOM_LEVEL_BASE);
+    let i = order.indexOf(v.customization.level);
+    i = Math.min(order.length - 1, i + 1);
+    v.customization.level = order[i];
+    v.migration.cycles = state.migration.cycles + 1;
+    v.reporting.complexity = 'High';
+    v.integrations = state.integrations.concat([
+      { id: 9001, name: 'Additional system A', category: 'Custom application', direction: 'Bidirectional', complexity: 'High', mode: 'Real-time', interfaces: 2 },
+      { id: 9002, name: 'Additional system B', category: 'Legacy application', direction: 'Bidirectional', complexity: 'Medium', mode: 'Batch', interfaces: 2 }
+    ]);
+    Object.keys(v.complexity.areas).forEach((k) => { v.complexity.areas[k] = bumpArea(v.complexity.areas[k], 1); });
+  }
+  return v;
+}
+
+function qualitativeComplexity(total) {
+  return total < 900 ? 'Low' : total < 1800 ? 'Medium' : total < 3200 ? 'High' : 'Very High';
+}
+
 function ScenariosPanel({ state }) {
-  const scB = state;
-  const resB = runEngine(scB);
-  const weeksB = durationWeeks(resB.total);
+  const scA = scenarioVariant(state, 'A');
+  const scB = scenarioVariant(state, 'B');
+  const scC = scenarioVariant(state, 'C');
+  const resA = runEngine(scA), resB = runEngine(scB), resC = runEngine(scC);
+  const rows = [
+    ['Effort (h)', fmtH(resA.total), fmtH(resB.total), fmtH(resC.total)],
+    ['Duration', (durationWeeks(resA.total) / 4.345).toFixed(1) + ' mo', (durationWeeks(resB.total) / 4.345).toFixed(1) + ' mo', (durationWeeks(resC.total) / 4.345).toFixed(1) + ' mo'],
+    ['Team size', peakFTE(resA.total, durationWeeks(resA.total)) + ' FTE', peakFTE(resB.total, durationWeeks(resB.total)) + ' FTE', peakFTE(resC.total, durationWeeks(resC.total)) + ' FTE'],
+    ['Complexity', qualitativeComplexity(resA.total), qualitativeComplexity(resB.total), qualitativeComplexity(resC.total)],
+    ['Risk (high-probability risks)', risks(scA).filter((r) => r.prob === 'High').length, risks(scB).filter((r) => r.prob === 'High').length, risks(scC).filter((r) => r.prob === 'High').length]
+  ];
 
   return (
     <section className={styles.panel}>
@@ -1550,27 +1984,55 @@ function ScenariosPanel({ state }) {
         <h1>What-If / Scenario Analysis</h1>
       </div>
       <p className={styles.panelSub}>
-        Scenario analysis helps validate the estimate against different delivery approaches.
+        Three deployment postures built on the same customer profile and module scope you've entered, varying customisation, integration and migration intensity.
       </p>
-      <div className={styles.card}>
-        <h3>Current Scenario (B — Enhanced Implementation)</h3>
-        <table className={styles.regTable}>
-          <tbody>
-            <tr>
-              <td><strong>Effort</strong></td>
-              <td>{fmtH(resB.total)} h</td>
-            </tr>
-            <tr>
-              <td><strong>Duration</strong></td>
-              <td>{(weeksB / 4.345).toFixed(1)} months</td>
-            </tr>
-            <tr>
-              <td><strong>Team size</strong></td>
-              <td>{peakFTE(resB.total, weeksB)} FTE</td>
-            </tr>
-          </tbody>
-        </table>
+      <div className={styles.grid3}>
+        <div className={styles.card}><h3 style={{ fontSize: '13.5px' }}>A: Standard Implementation</h3><p style={{ fontSize: '12.5px', color: 'var(--text-2)', marginTop: '6px' }}>Minimal customisation, single migration cycle, low reporting complexity, core integrations only.</p></div>
+        <div className={styles.card}><h3 style={{ fontSize: '13.5px' }}>B: Enhanced Implementation</h3><p style={{ fontSize: '12.5px', color: 'var(--text-2)', marginTop: '6px' }}>Current inputs as entered, plus additional reporting, integrations and workflow as scoped.</p></div>
+        <div className={styles.card}><h3 style={{ fontSize: '13.5px' }}>C: Complex Transformation</h3><p style={{ fontSize: '12.5px', color: 'var(--text-2)', marginTop: '6px' }}>Elevated customisation, extra migration cycle, high reporting complexity, two additional integrations.</p></div>
       </div>
+      <table className={styles.scenarioTable}>
+        <thead><tr><th>Metric</th><th>Scenario A</th><th>Scenario B</th><th>Scenario C</th></tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              <td className="metric">{r[0]}</td>
+              <td className="num">{r[1]}</td>
+              <td className="num">{r[2]}</td>
+              <td className="num">{r[3]}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className={styles.footerNote}>Scenarios are generated automatically from your current profile. They are a sensitivity check, not independent proposals.</p>
+    </section>
+  );
+}
+
+function ResourcesPanel() {
+  return (
+    <section className={styles.panel}>
+      <div className={styles.panelHead}>
+        <h1>Videos and How-To Resources</h1>
+      </div>
+      <p className={styles.panelSub}>
+        Official Microsoft Learn pages and videos for the prospect or delivery team to explore how Business Central works and how to use it, before or after go-live.
+      </p>
+      {RESOURCE_LINKS.map((g) => (
+        <div key={g.group}>
+          <div className={styles.sectionLabel}>{g.group}</div>
+          <div className={styles.grid2} style={{ marginBottom: '20px' }}>
+            {g.items.map((it) => (
+              <a key={it.url} href={it.url} target="_blank" rel="noopener noreferrer" className={`${styles.card} ${styles.resourceCard}`}>
+                <h3>{it.title}</h3>
+                <p>{it.desc}</p>
+                <p className={`url ${styles.mono}`}>{it.url}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+      <p className={styles.footerNote}>Links point to Microsoft Learn and Microsoft's official Business Central channels. Content on those pages belongs to Microsoft and may change over time.</p>
     </section>
   );
 }
