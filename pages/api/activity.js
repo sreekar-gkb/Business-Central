@@ -1,4 +1,5 @@
 import { sql } from '../../lib/db';
+import { findSessionById } from '../../lib/session';
 
 function checkAdmin(req, res) {
   const adminKey = req.headers.authorization?.replace('Bearer ', '');
@@ -23,12 +24,7 @@ export default async function handler(req, res) {
       const { sessionId } = req.query;
 
       if (sessionId) {
-        const sessions = await sql`
-          SELECT id, device_id, name, started_at, last_activity_at
-          FROM sessions WHERE id = ${sessionId}
-          LIMIT 1
-        `;
-        const session = sessions[0];
+        const session = await findSessionById(sessionId);
         if (!session) {
           return res.status(404).json({ error: 'No activity found for this session' });
         }
