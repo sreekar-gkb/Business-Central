@@ -15,7 +15,16 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { name } = req.body || {};
+      const { name, password } = req.body || {};
+      const sharedPassword = process.env.VIEW_PASSWORD || process.env.SHARED_PASSWORD || 'raven123';
+
+      if (!password) {
+        return res.status(400).json({ error: 'Password required' });
+      }
+      if (password !== sharedPassword) {
+        return res.status(401).json({ error: 'Wrong password' });
+      }
+
       const session = await resolveSession(req, res, (name || '').trim() || 'Anonymous');
       return res.status(200).json({ found: true, name: session.name });
     }

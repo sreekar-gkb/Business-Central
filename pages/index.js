@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import NameGate from '../components/NameGate';
+import PasswordGate from '../components/PasswordGate';
 import ArtifactContent from '../components/ArtifactContent';
 import styles from '../styles/Home.module.css';
 
@@ -9,7 +9,8 @@ export default function Home() {
   const [contact, setContact] = useState('Anonymous');
 
   useEffect(() => {
-    // Resume an existing browser session automatically (no login required)
+    // Resume an existing browser session automatically (skip re-entering
+    // the shared password on repeat visits from the same browser)
     fetch('/api/session')
       .then((res) => (res.ok ? res.json() : { found: false }))
       .then((data) => {
@@ -29,7 +30,7 @@ export default function Home() {
   return (
     <div className={styles.container}>
       {!unlocked ? (
-        <NameGate onUnlock={(name) => {
+        <PasswordGate onUnlock={(name) => {
           setContact(name);
           setUnlocked(true);
         }} contact={contact} />
