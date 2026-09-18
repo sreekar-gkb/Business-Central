@@ -12,8 +12,6 @@ export default function Settings() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [estimatePassword, setEstimatePassword] = useState('');
-  const [newEstimatePassword, setNewEstimatePassword] = useState('');
 
   // Step 1: Authenticate with admin key
   const authenticateAdmin = async () => {
@@ -105,53 +103,6 @@ export default function Settings() {
         setPassword('');
         setNewPassword('');
         setConfirmPassword('');
-        setTimeout(() => setSuccess(''), 3000);
-      } else {
-        const data = await response.json();
-        setError(data.error || 'Failed to update password');
-      }
-    } catch (err) {
-      setError('Error: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateEstimatePassword = async () => {
-    if (!estimatePassword) {
-      setError('Current estimate password required');
-      return;
-    }
-    if (!newEstimatePassword) {
-      setError('New estimate password required');
-      return;
-    }
-    if (newEstimatePassword.length < 6) {
-      setError('Password must be at least 6 characters');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      const response = await fetch('/api/settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${adminKey}`,
-        },
-        body: JSON.stringify({
-          action: 'updateEstimatePassword',
-          currentPassword: estimatePassword,
-          newPassword: newEstimatePassword,
-        }),
-      });
-
-      if (response.ok) {
-        setSuccess('Estimate password updated successfully');
-        setEstimatePassword('');
-        setNewEstimatePassword('');
         setTimeout(() => setSuccess(''), 3000);
       } else {
         const data = await response.json();
@@ -269,42 +220,6 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Change Estimate Password */}
-            <div className={styles.settingBox}>
-              <h3>🔐 Change Estimate Password</h3>
-              <p>Update the password users need to view the estimate.</p>
-
-              <div className={styles.form}>
-                <div className={styles.field}>
-                  <label>Current Estimate Password</label>
-                  <input
-                    type="password"
-                    value={estimatePassword}
-                    onChange={(e) => setEstimatePassword(e.target.value)}
-                    placeholder="Current estimate password"
-                  />
-                </div>
-
-                <div className={styles.field}>
-                  <label>New Estimate Password</label>
-                  <input
-                    type="password"
-                    value={newEstimatePassword}
-                    onChange={(e) => setNewEstimatePassword(e.target.value)}
-                    placeholder="New estimate password (min 6 characters)"
-                  />
-                </div>
-
-                <button
-                  className={styles.button}
-                  onClick={updateEstimatePassword}
-                  disabled={loading}
-                >
-                  {loading ? 'Updating...' : 'Update Estimate Password'}
-                </button>
-              </div>
-            </div>
-
             {error && <div className={styles.error}>{error}</div>}
             {success && <div className={styles.success}>{success}</div>}
 
@@ -314,7 +229,6 @@ export default function Settings() {
                 <li>Use strong, unique passwords (mix of letters, numbers, symbols)</li>
                 <li>Don't share your admin key</li>
                 <li>Change passwords regularly (every 30-90 days)</li>
-                <li>Use different passwords for admin and estimate</li>
                 <li>Change default admin key before production deployment</li>
               </ul>
             </div>

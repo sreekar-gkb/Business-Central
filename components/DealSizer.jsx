@@ -219,22 +219,63 @@ function getDefaultState() {
   };
 }
 
+// JSONB in the database can't hold Sets, so state is round-tripped as
+// plain arrays for the Set-typed fields and rebuilt into Sets on load.
+const SET_PATHS = [
+  ['challenges'],
+  ['modules'],
+  ['migration', 'scope'],
+  ['reporting', 'items'],
+  ['support', 'scope']
+];
+
+function serializeState(state) {
+  const out = JSON.parse(JSON.stringify(state, (key, value) => (value instanceof Set ? [...value] : value)));
+  return out;
+}
+
+function deserializeState(saved) {
+  const out = JSON.parse(JSON.stringify(saved));
+  SET_PATHS.forEach(([a, b]) => {
+    if (b) {
+      if (out[a] && Array.isArray(out[a][b])) out[a][b] = new Set(out[a][b]);
+    } else if (Array.isArray(out[a])) {
+      out[a] = new Set(out[a]);
+    }
+  });
+  return out;
+}
+
 export default function DealSizer({ contact = 'Anonymous', onLogout }) {
   const [state, setState] = useState(getDefaultState());
   const [activePanel, setActivePanel] = useState("inputs");
+  const [loaded, setLoaded] = useState(false);
 
-  // Track user session and interactions
+  // Load any previously saved estimate for this browser session
   useEffect(() => {
-    // Start tracking when component mounts
-    if (typeof window !== 'undefined') {
-      // Send initial session start
-      fetch('/api/activity-init', {
+    fetch('/api/estimate')
+      .then((res) => (res.ok ? res.json() : { state: null }))
+      .then((data) => {
+        if (data.state) {
+          setState(deserializeState(data.state));
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, []);
+
+  // Autosave the estimate to the database whenever it changes (debounced)
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      fetch('/api/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contact }),
+        body: JSON.stringify({ state: serializeState(state) }),
       }).catch(() => {});
-    }
-  }, [contact]);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [state, loaded]);
 
   const res = useMemo(() => runEngine(state), [state]);
   const weeks = durationWeeks(res.total);
@@ -248,7 +289,6 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contact,
           eventType,
           details,
         }),

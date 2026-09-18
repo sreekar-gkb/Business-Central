@@ -10,6 +10,7 @@
     "export": "next export"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "chart.js": "^4.5.1",
     "next": "^16.3.5",
     "react": "^18.2.0",

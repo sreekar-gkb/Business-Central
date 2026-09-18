@@ -408,11 +408,8 @@ export default function Admin() {
 
         <div className={styles.footer}>
           <p>
-            <strong>⚠️ Note:</strong> Logs are stored in-memory and lost when
-            the server restarts. For production, migrate to a database.
-          </p>
-          <p>
-            Learn more: See <code>TRACKING_GUIDE.md</code>
+            <strong>Note:</strong> Activity is stored in the Neon Postgres database
+            and persists across deployments and server restarts.
           </p>
         </div>
       </div>

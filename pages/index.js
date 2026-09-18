@@ -1,26 +1,35 @@
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
-import PasswordGate from '../components/PasswordGate';
+import NameGate from '../components/NameGate';
 import ArtifactContent from '../components/ArtifactContent';
 import styles from '../styles/Home.module.css';
 
 export default function Home() {
-  const router = useRouter();
+  const [checking, setChecking] = useState(true);
   const [unlocked, setUnlocked] = useState(false);
   const [contact, setContact] = useState('Anonymous');
 
   useEffect(() => {
-    // Get contact name from URL query parameter
-    if (router.isReady) {
-      const contactParam = router.query.contact || 'Anonymous';
-      setContact(contactParam);
-    }
-  }, [router.isReady, router.query]);
+    // Resume an existing browser session automatically (no login required)
+    fetch('/api/session')
+      .then((res) => (res.ok ? res.json() : { found: false }))
+      .then((data) => {
+        if (data.found) {
+          setContact(data.name);
+          setUnlocked(true);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, []);
+
+  if (checking) {
+    return <div className={styles.container} />;
+  }
 
   return (
     <div className={styles.container}>
       {!unlocked ? (
-        <PasswordGate onUnlock={(name) => {
+        <NameGate onUnlock={(name) => {
           setContact(name);
           setUnlocked(true);
         }} contact={contact} />

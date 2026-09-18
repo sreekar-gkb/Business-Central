@@ -2,7 +2,6 @@
 // For production, use a database
 let settings = {
   adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
-  estimatePassword: process.env.VIEW_PASSWORD || 'testpass123',
   username: 'Administrator',
 };
 
@@ -49,26 +48,6 @@ export default function handler(req, res) {
       return res.status(200).json({
         success: true,
         message: 'Admin password updated successfully',
-      });
-    }
-
-    if (action === 'updateEstimatePassword') {
-      // Verify current password
-      if (currentPassword !== settings.estimatePassword) {
-        return res.status(400).json({ error: 'Current password is incorrect' });
-      }
-
-      if (!newPassword || newPassword.length < 6) {
-        return res.status(400).json({ error: 'New password must be at least 6 characters' });
-      }
-
-      settings.estimatePassword = newPassword;
-      process.env.VIEW_PASSWORD = newPassword;
-
-      console.log('[SECURITY] Estimate password changed');
-      return res.status(200).json({
-        success: true,
-        message: 'Estimate password updated successfully',
       });
     }
 

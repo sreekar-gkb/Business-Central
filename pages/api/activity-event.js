@@ -1,6 +1,7 @@
-import { trackEvent } from '../../lib/tracking';
+import { sql } from '../../lib/db';
+import { getSessionToken, findSessionByToken, touchSession } from '../../lib/session';
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   res.setHeader('Content-Type', 'application/json');
 
   if (req.method !== 'POST') {
@@ -8,18 +9,25 @@ export default function handler(req, res) {
   }
 
   try {
-    const { contact, eventType, details } = req.body;
-
-    if (!contact || !eventType) {
-      return res.status(400).json({ error: 'Contact and eventType required' });
+    const token = getSessionToken(req);
+    const session = await findSessionByToken(token);
+    if (!session) {
+      return res.status(401).json({ error: 'No active session' });
     }
 
-    trackEvent(contact, eventType, details || {});
+    const { eventType, details } = req.body || {};
+    if (!eventType) {
+      return res.status(400).json({ error: 'eventType required' });
+    }
 
-    return res.status(200).json({
-      success: true,
-      recorded: true,
-    });
+    const detailsJson = JSON.stringify(details || {});
+    await sql`
+      INSERT INTO activity_logs (session_id, event_type, details)
+      VALUES (${session.id}, ${eventType}, ${detailsJson}::jsonb)
+    `;
+    await touchSession(session.id);
+
+    return res.status(200).json({ success: true, recorded: true });
   } catch (err) {
     console.error('Activity event error:', err);
     return res.status(500).json({ error: 'Internal server error' });
