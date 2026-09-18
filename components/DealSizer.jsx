@@ -470,6 +470,14 @@ export default function DealSizer({ contact = 'Anonymous', onLogout }) {
     }));
   };
 
+  if (!loaded) {
+    return (
+      <div className={styles.app} style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', width: '100%' }}>
+        <div style={{ color: 'var(--text-3)', fontSize: '13.5px' }}>Loading your estimate…</div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.app}>
       <Sidebar
@@ -557,8 +565,8 @@ function Sidebar({ activePanel, onPanelChange }) {
       <div className={styles.railBrand}>
         <div className={styles.mark}>BC</div>
         <div>
-          <div className={styles.name}>Deal Sizer</div>
-          <div className={styles.sub}>Raven Labs · Pre-Sales</div>
+          <div className={styles.name}>Raven Labs</div>
+          <div className={styles.sub}>Deal Sizer · Pre-Sales</div>
         </div>
       </div>
       <nav className={styles.nav}>
